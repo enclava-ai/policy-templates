@@ -1,0 +1,140 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: enclava-policy
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: signing-service-secrets
+  namespace: enclava-policy
+type: Opaque
+stringData:
+  # Base64-encoded 32-byte Ed25519 seed. Generate and store this in the
+  # platform secret manager; do not commit real key material.
+  POLICY_SIGNING_KEY_B64: replace-with-secret-manager-value
+  # Human-readable release/key version embedded in signed policy metadata.
+  POLICY_SIGNING_KEY_ID: policy-signing-v1
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: signing-service-owner-db
+  namespace: enclava-policy
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: signing-service-config
+  namespace: enclava-policy
+data:
+  BIND_ADDR: 0.0.0.0:8080
+  OWNER_DB_PATH: /data/owner-state.sqlite3
+  GENPOLICY_BIN: /usr/local/bin/genpolicy
+  GENPOLICY_VERSION_PIN: replace-with-platform-genpolicy-version
+  # Optional. Set this to the mounted settings directory when genpolicy needs
+  # a JSON settings directory, otherwise remove the env var from the Deployment.
+  GENPOLICY_SETTINGS_DIR: /etc/genpolicy/settings
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signing-service
+  namespace: enclava-policy
+  labels:
+    app.kubernetes.io/name: enclava-policy-signing-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: enclava-policy-signing-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: enclava-policy-signing-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: signing-service
+          image: ghcr.io/enclava-ai/policy-signing-service:replace-with-digest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: signing-service-config
+            - secretRef:
+                name: signing-service-secrets
+          volumeMounts:
+            - name: owner-db
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            # Mount or bake a pinned genpolicy binary at GENPOLICY_BIN before
+            # enabling signing flows that call the genpolicy adapter.
+            # - name: genpolicy-bin
+            #   mountPath: /usr/local/bin/genpolicy
+            #   subPath: genpolicy
+            #   readOnly: true
+            # - name: genpolicy-settings
+            #   mountPath: /etc/genpolicy/settings
+            #   readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+      volumes:
+        - name: owner-db
+          persistentVolumeClaim:
+            claimName: signing-service-owner-db
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signing-service
+  namespace: enclava-policy
+  labels:
+    app.kubernetes.io/name: enclava-policy-signing-service
+spec:
+  selector:
+    app.kubernetes.io/name: enclava-policy-signing-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

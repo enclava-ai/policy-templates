@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  signing-service:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: fmt
+        working-directory: signing-service
+        run: cargo fmt --check
+      - name: test
+        working-directory: signing-service
+        run: cargo test --locked
+      - name: clippy
+        working-directory: signing-service
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: docker build
+        run: docker build -f signing-service/Dockerfile -t enclava-policy-signing-service:ci .
