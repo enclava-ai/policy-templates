@@ -12,6 +12,7 @@ use crate::{
     descriptor::{
         descriptor_core_hash, verify_descriptor, DeploymentDescriptor, DeploymentDescriptorEnvelope,
     },
+    genpolicy::GeneratedAgentPolicy,
     keyring::{find_deployer_pubkey, keyring_fingerprint, verify_keyring, OrgKeyringEnvelope},
     TEMPLATE_ID, TEMPLATE_TEXT,
 };
@@ -36,6 +37,8 @@ pub struct SignedPolicyArtifact {
     pub metadata: PolicyMetadata,
     pub rego_text: String,
     pub rego_sha256: String,
+    pub agent_policy_text: String,
+    pub agent_policy_sha256: String,
     pub signature: String,
     pub verify_pubkey_b64: String,
 }
@@ -49,6 +52,8 @@ pub struct PolicyMetadata {
     pub platform_release_version: String,
     pub policy_template_id: String,
     pub policy_template_sha256: String,
+    pub agent_policy_sha256: String,
+    pub genpolicy_version_pin: String,
     pub signed_at: String,
     pub key_id: String,
 }
@@ -127,6 +132,7 @@ pub fn verify_signing_inputs(
 pub fn sign_verified_policy(
     req: &SignRequest,
     inputs: VerifiedSigningInputs,
+    generated_agent_policy: GeneratedAgentPolicy,
     key_material: &SigningKeyMaterial,
     signed_at: DateTime<Utc>,
 ) -> Result<SignedPolicyArtifact> {
@@ -157,6 +163,11 @@ pub fn sign_verified_policy(
     if inputs.descriptor.expected_kbs_policy_hash != rego_hash {
         bail!("descriptor expected_kbs_policy_hash does not match rendered policy");
     }
+    let agent_policy_hash: [u8; 32] =
+        Sha256::digest(generated_agent_policy.policy_text.as_bytes()).into();
+    if inputs.descriptor.expected_agent_policy_hash != agent_policy_hash {
+        bail!("descriptor expected_agent_policy_hash does not match generated agent policy");
+    }
 
     let metadata = PolicyMetadata {
         app_id: inputs.descriptor.app_id.to_string(),
@@ -166,6 +177,8 @@ pub fn sign_verified_policy(
         platform_release_version: inputs.descriptor.platform_release_version.clone(),
         policy_template_id: TEMPLATE_ID.to_string(),
         policy_template_sha256: hex::encode(template_sha256),
+        agent_policy_sha256: hex::encode(agent_policy_hash),
+        genpolicy_version_pin: generated_agent_policy.invocation.version_pin.clone(),
         signed_at: signed_at.to_rfc3339(),
         key_id: key_material.key_id.clone(),
     };
@@ -176,6 +189,8 @@ pub fn sign_verified_policy(
         metadata,
         rego_text,
         rego_sha256: hex::encode(rego_hash),
+        agent_policy_text: generated_agent_policy.policy_text,
+        agent_policy_sha256: hex::encode(agent_policy_hash),
         signature: hex::encode(signature.to_bytes()),
         verify_pubkey_b64: B64.encode(key_material.signing_key.verifying_key().to_bytes()),
     })
@@ -192,6 +207,18 @@ pub fn verify_signed_artifact(
     let actual_rego_hash: [u8; 32] = Sha256::digest(artifact.rego_text.as_bytes()).into();
     if rego_hash != actual_rego_hash {
         bail!("rego_sha256 does not match rego_text");
+    }
+    let agent_policy_hash: [u8; 32] = hex::decode(&artifact.agent_policy_sha256)
+        .context("decoding agent_policy_sha256")?
+        .try_into()
+        .map_err(|_| anyhow!("agent_policy_sha256 must be 32 bytes"))?;
+    let actual_agent_policy_hash: [u8; 32] =
+        Sha256::digest(artifact.agent_policy_text.as_bytes()).into();
+    if agent_policy_hash != actual_agent_policy_hash {
+        bail!("agent_policy_sha256 does not match agent_policy_text");
+    }
+    if artifact.metadata.agent_policy_sha256 != artifact.agent_policy_sha256 {
+        bail!("metadata.agent_policy_sha256 does not match artifact");
     }
     let signature_bytes: [u8; 64] = decode_signature(&artifact.signature)?;
     let signature = Signature::from_bytes(&signature_bytes);
@@ -263,6 +290,7 @@ pub fn canonical_policy_metadata_hash(metadata: &PolicyMetadata) -> Result<[u8; 
     )?;
     let policy_template_sha256 =
         decode_hex32("policy_template_sha256", &metadata.policy_template_sha256)?;
+    let agent_policy_sha256 = decode_hex32("agent_policy_sha256", &metadata.agent_policy_sha256)?;
 
     Ok(ce_v1_hash(&[
         ("app_id", &app_id),
@@ -275,6 +303,11 @@ pub fn canonical_policy_metadata_hash(metadata: &PolicyMetadata) -> Result<[u8; 
         ),
         ("policy_template_id", metadata.policy_template_id.as_bytes()),
         ("policy_template_sha256", &policy_template_sha256),
+        ("agent_policy_sha256", &agent_policy_sha256),
+        (
+            "genpolicy_version_pin",
+            metadata.genpolicy_version_pin.as_bytes(),
+        ),
         ("signed_at", metadata.signed_at.as_bytes()),
         ("key_id", metadata.key_id.as_bytes()),
     ]))
@@ -344,9 +377,11 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use ed25519_dalek::Signer;
+    use std::path::PathBuf;
 
     use crate::{
         descriptor::{tests::fixed_descriptor, DeploymentDescriptorEnvelope},
+        genpolicy::{GeneratedAgentPolicy, GenpolicyInvocation},
         keyring::tests::{fixed_deployer_key, fixed_keyring, fixed_owner_key, sign_keyring},
     };
 
@@ -358,10 +393,25 @@ mod tests {
         SigningKey::from_bytes(&[0x33; 32])
     }
 
+    fn generated_agent_policy() -> GeneratedAgentPolicy {
+        GeneratedAgentPolicy {
+            policy_text: "package agent_policy\n\ndefault CreateContainerRequest := true\n"
+                .to_string(),
+            invocation: GenpolicyInvocation {
+                binary: PathBuf::from("genpolicy"),
+                args: vec!["-y".to_string(), "pod.yaml".to_string()],
+                manifest_yaml: "apiVersion: v1\nkind: Pod\n".to_string(),
+                version_pin: "kata-containers/genpolicy@3.28.0+test".to_string(),
+            },
+        }
+    }
+
     fn descriptor_for_service() -> DeploymentDescriptor {
         let mut descriptor = fixed_descriptor();
         descriptor.policy_template_id = TEMPLATE_ID.to_string();
         descriptor.policy_template_sha256 = template_sha256();
+        descriptor.expected_agent_policy_hash =
+            Sha256::digest(generated_agent_policy().policy_text.as_bytes()).into();
         descriptor.expected_cc_init_data_hash = [0x55; 32];
         descriptor.expected_kbs_policy_hash = Sha256::digest(
             render_template(&descriptor)
@@ -443,10 +493,25 @@ mod tests {
             key_id: "policy-test-key-v1".to_string(),
             signing_key: fixed_service_key(),
         };
-        let artifact = sign_verified_policy(&req, inputs, &key_material, fixed_time()).unwrap();
+        let artifact = sign_verified_policy(
+            &req,
+            inputs,
+            generated_agent_policy(),
+            &key_material,
+            fixed_time(),
+        )
+        .unwrap();
         verify_signed_artifact(&artifact, &key_material.signing_key.verifying_key()).unwrap();
         assert_eq!(artifact.metadata.key_id, "policy-test-key-v1");
         assert_eq!(artifact.metadata.policy_template_id, TEMPLATE_ID);
+        assert_eq!(
+            artifact.agent_policy_sha256,
+            artifact.metadata.agent_policy_sha256
+        );
+        assert_eq!(
+            artifact.metadata.genpolicy_version_pin,
+            "kata-containers/genpolicy@3.28.0+test"
+        );
     }
 
     #[test]
@@ -458,7 +523,14 @@ mod tests {
             key_id: "policy-test-key-v1".to_string(),
             signing_key: fixed_service_key(),
         };
-        let err = sign_verified_policy(&req, inputs, &key_material, fixed_time()).unwrap_err();
+        let err = sign_verified_policy(
+            &req,
+            inputs,
+            generated_agent_policy(),
+            &key_material,
+            fixed_time(),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("request app_id"));
     }
 
@@ -489,8 +561,35 @@ mod tests {
             key_id: "policy-test-key-v1".to_string(),
             signing_key: fixed_service_key(),
         };
-        let err = sign_verified_policy(&req, inputs, &key_material, fixed_time()).unwrap_err();
+        let err = sign_verified_policy(
+            &req,
+            inputs,
+            generated_agent_policy(),
+            &key_material,
+            fixed_time(),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("expected_kbs_policy_hash"));
+    }
+
+    #[test]
+    fn expected_agent_policy_hash_must_match_genpolicy_output() {
+        let mut inputs = verified_inputs();
+        inputs.descriptor.expected_agent_policy_hash = [0xaa; 32];
+        let req = sign_request_for(&inputs.descriptor);
+        let key_material = SigningKeyMaterial {
+            key_id: "policy-test-key-v1".to_string(),
+            signing_key: fixed_service_key(),
+        };
+        let err = sign_verified_policy(
+            &req,
+            inputs,
+            generated_agent_policy(),
+            &key_material,
+            fixed_time(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("expected_agent_policy_hash"));
     }
 
     #[test]
@@ -550,7 +649,14 @@ mod tests {
             key_id: "policy-test-key-v1".to_string(),
             signing_key: fixed_service_key(),
         };
-        let artifact = sign_verified_policy(&req, inputs, &key_material, fixed_time()).unwrap();
+        let artifact = sign_verified_policy(
+            &req,
+            inputs,
+            generated_agent_policy(),
+            &key_material,
+            fixed_time(),
+        )
+        .unwrap();
         let rego_hash: [u8; 32] = hex::decode(&artifact.rego_sha256)
             .unwrap()
             .try_into()
@@ -564,6 +670,7 @@ mod tests {
             "verify_pubkey_b64": artifact.verify_pubkey_b64,
             "metadata": artifact.metadata,
             "rego_sha256": artifact.rego_sha256,
+            "agent_policy_sha256": artifact.agent_policy_sha256,
             "canonical_policy_metadata_hash": hex::encode(canonical_policy_metadata_hash(&artifact.metadata).unwrap()),
             "signing_input_hex": hex::encode(signing_input),
             "signature": artifact.signature,

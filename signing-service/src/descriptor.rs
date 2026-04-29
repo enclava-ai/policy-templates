@@ -121,6 +121,9 @@ pub struct DeploymentDescriptor {
     pub platform_release_version: String,
 
     #[serde(with = "hex_bytes32")]
+    #[serde(default)]
+    pub expected_agent_policy_hash: [u8; 32],
+    #[serde(with = "hex_bytes32")]
     pub expected_cc_init_data_hash: [u8; 32],
     #[serde(with = "hex_bytes32")]
     pub expected_kbs_policy_hash: [u8; 32],
@@ -349,6 +352,10 @@ fn descriptor_records<'a>(
     ];
     if include_chain_anchors {
         records.push((
+            "expected_agent_policy_hash",
+            descriptor.expected_agent_policy_hash.as_slice(),
+        ));
+        records.push((
             "expected_cc_init_data_hash",
             descriptor.expected_cc_init_data_hash.as_slice(),
         ));
@@ -491,6 +498,7 @@ pub mod tests {
             policy_template_id: "kbs-release-policy-v3".to_string(),
             policy_template_sha256: [4; 32],
             platform_release_version: "platform-2026.04".to_string(),
+            expected_agent_policy_hash: [7; 32],
             expected_cc_init_data_hash: [5; 32],
             expected_kbs_policy_hash: [6; 32],
         }
@@ -508,6 +516,7 @@ pub mod tests {
     fn descriptor_core_excludes_forward_chain_hashes() {
         let mut descriptor = fixed_descriptor();
         let before = descriptor_core_hash(&descriptor);
+        descriptor.expected_agent_policy_hash = [0xdd; 32];
         descriptor.expected_cc_init_data_hash = [0xff; 32];
         descriptor.expected_kbs_policy_hash = [0xee; 32];
         assert_eq!(before, descriptor_core_hash(&descriptor));
@@ -517,6 +526,16 @@ pub mod tests {
     fn full_descriptor_includes_forward_chain_hashes() {
         let mut a = fixed_descriptor();
         let mut b = a.clone();
+        b.expected_agent_policy_hash = [0xdd; 32];
+        assert_ne!(
+            descriptor_canonical_bytes(&a),
+            descriptor_canonical_bytes(&b)
+        );
+        a.expected_agent_policy_hash = [0xdd; 32];
+        assert_eq!(
+            descriptor_canonical_bytes(&a),
+            descriptor_canonical_bytes(&b)
+        );
         b.expected_kbs_policy_hash = [0xee; 32];
         assert_ne!(
             descriptor_canonical_bytes(&a),

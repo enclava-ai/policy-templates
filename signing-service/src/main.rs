@@ -23,6 +23,7 @@ use enclava_policy_signing_service::{
     TEMPLATE_ID,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -76,6 +77,18 @@ struct HealthResponse {
     genpolicy_version_pin: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct AgentPolicyRequest {
+    descriptor: enclava_policy_signing_service::descriptor::DeploymentDescriptor,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentPolicyResponse {
+    agent_policy_text: String,
+    agent_policy_sha256: String,
+    genpolicy_version_pin: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -96,6 +109,7 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/agent-policy", post(generate_agent_policy))
         .route("/sign", post(sign_policy))
         .route("/bootstrap-org", post(bootstrap_org))
         .route("/rotate-owner", post(rotate_owner))
@@ -123,6 +137,22 @@ async fn healthz(State(state): State<AppState>) -> Json<HealthResponse> {
     })
 }
 
+async fn generate_agent_policy(
+    State(state): State<AppState>,
+    Json(req): Json<AgentPolicyRequest>,
+) -> Result<Json<AgentPolicyResponse>, AppError> {
+    if req.descriptor.schema_version != "v1" {
+        return Err(AppError(anyhow!("unsupported descriptor schema_version")));
+    }
+    let generated = state.genpolicy.run(&req.descriptor)?;
+    let agent_policy_sha256 = hex::encode(Sha256::digest(generated.policy_text.as_bytes()));
+    Ok(Json(AgentPolicyResponse {
+        agent_policy_text: generated.policy_text,
+        agent_policy_sha256,
+        genpolicy_version_pin: generated.invocation.version_pin,
+    }))
+}
+
 async fn sign_policy(
     State(state): State<AppState>,
     Json(req): Json<SignRequest>,
@@ -144,7 +174,13 @@ async fn sign_policy(
         policy_bytes = generated_agent_policy.policy_text.len(),
         "generated Kata agent policy from verified deployment descriptor"
     );
-    let artifact = sign_verified_policy(&req, inputs, &state.key_material, Utc::now())?;
+    let artifact = sign_verified_policy(
+        &req,
+        inputs,
+        generated_agent_policy,
+        &state.key_material,
+        Utc::now(),
+    )?;
     let verify_key = state.key_material.signing_key.verifying_key();
     verify_signed_artifact(&artifact, &verify_key)?;
     Ok(Json(artifact))
