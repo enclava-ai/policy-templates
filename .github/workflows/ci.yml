@@ -1,6 +1,7 @@
 name: ci
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
@@ -62,4 +63,11 @@ jobs:
         env:
           IMAGE: ghcr.io/enclava-ai/policy-signing-service
           DIGEST: ${{ steps.build.outputs.digest }}
-        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+        run: |
+          for attempt in 1 2 3; do
+            if cosign sign --yes "${IMAGE}@${DIGEST}"; then
+              exit 0
+            fi
+            sleep "$((attempt * 10))"
+          done
+          exit 1
