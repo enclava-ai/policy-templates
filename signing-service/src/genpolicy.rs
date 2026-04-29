@@ -12,6 +12,7 @@ use crate::descriptor::{DeploymentDescriptor, EnvVar, Mount, OciRuntimeSpec, Por
 pub struct GenpolicyConfig {
     pub binary: PathBuf,
     pub version_pin: String,
+    pub rules_path: PathBuf,
     pub settings_dir: Option<PathBuf>,
 }
 
@@ -34,6 +35,8 @@ impl GenpolicyConfig {
         let binary = std::env::var("GENPOLICY_BIN").unwrap_or_else(|_| "genpolicy".to_string());
         let version_pin = std::env::var("GENPOLICY_VERSION_PIN")
             .unwrap_or_else(|_| "unconfigured-local".to_string());
+        let rules_path =
+            std::env::var("GENPOLICY_RULES_PATH").unwrap_or_else(|_| "rules.rego".to_string());
         let settings_dir = std::env::var("GENPOLICY_SETTINGS_DIR")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -41,8 +44,17 @@ impl GenpolicyConfig {
         Self {
             binary: PathBuf::from(binary),
             version_pin,
+            rules_path: PathBuf::from(rules_path),
             settings_dir,
         }
+    }
+
+    pub fn require_pinned_version(&self) -> Result<()> {
+        let pin = self.version_pin.trim();
+        if pin.is_empty() || pin.contains("unconfigured") || pin.contains("unpinned") {
+            bail!("GENPOLICY_VERSION_PIN must be a concrete pinned genpolicy release");
+        }
+        Ok(())
     }
 
     pub fn build_invocation(
@@ -50,7 +62,13 @@ impl GenpolicyConfig {
         descriptor: &DeploymentDescriptor,
     ) -> Result<GenpolicyInvocation> {
         let manifest_yaml = render_pod_manifest(descriptor)?;
-        let mut args = vec!["-y".to_string(), "pod.yaml".to_string()];
+        let mut args = vec![
+            "-y".to_string(),
+            "pod.yaml".to_string(),
+            "-p".to_string(),
+            self.rules_path.display().to_string(),
+            "-r".to_string(),
+        ];
         if let Some(settings_dir) = &self.settings_dir {
             args.push("-j".to_string());
             args.push(settings_dir.display().to_string());
@@ -70,7 +88,13 @@ impl GenpolicyConfig {
         std::fs::write(&manifest_path, &invocation.manifest_yaml)
             .with_context(|| format!("writing {}", manifest_path.display()))?;
 
-        let mut args = vec!["-y".to_string(), manifest_path.display().to_string()];
+        let mut args = vec![
+            "-y".to_string(),
+            manifest_path.display().to_string(),
+            "-p".to_string(),
+            self.rules_path.display().to_string(),
+            "-r".to_string(),
+        ];
         if let Some(settings_dir) = &self.settings_dir {
             args.push("-j".to_string());
             args.push(settings_dir.display().to_string());
@@ -78,6 +102,7 @@ impl GenpolicyConfig {
 
         let output = Command::new(&self.binary)
             .args(&args)
+            .current_dir(dir.path())
             .output()
             .with_context(|| format!("executing genpolicy binary {}", self.binary.display()))?;
         if !output.status.success() {
@@ -333,6 +358,7 @@ mod tests {
         let config = GenpolicyConfig {
             binary: PathBuf::from("/opt/kata/bin/genpolicy"),
             version_pin: "kata-containers-3.12.0".to_string(),
+            rules_path: PathBuf::from("/etc/enclava/genpolicy/rules.rego"),
             settings_dir: Some(PathBuf::from("/etc/enclava/genpolicy")),
         };
         let invocation = config.build_invocation(&fixed_descriptor()).unwrap();
@@ -343,6 +369,9 @@ mod tests {
             vec![
                 "-y".to_string(),
                 "pod.yaml".to_string(),
+                "-p".to_string(),
+                "/etc/enclava/genpolicy/rules.rego".to_string(),
+                "-r".to_string(),
                 "-j".to_string(),
                 "/etc/enclava/genpolicy".to_string()
             ]
@@ -357,5 +386,16 @@ mod tests {
         assert!(invocation.manifest_yaml.contains("image: sha256:aaaa"));
         assert!(invocation.manifest_yaml.contains("- name: A"));
         assert!(invocation.manifest_yaml.contains("value: '1'"));
+    }
+
+    #[test]
+    fn rejects_unpinned_version_label() {
+        let config = GenpolicyConfig {
+            binary: PathBuf::from("genpolicy"),
+            version_pin: "kata-containers/genpolicy-unpinned-dev".to_string(),
+            rules_path: PathBuf::from("rules.rego"),
+            settings_dir: None,
+        };
+        assert!(config.require_pinned_version().is_err());
     }
 }

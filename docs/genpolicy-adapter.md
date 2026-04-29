@@ -8,20 +8,30 @@ The adapter is intentionally explicit:
 
 - `GENPOLICY_BIN` selects the binary path, default `genpolicy`.
 - `GENPOLICY_VERSION_PIN` records the platform release pin, default
-  `unconfigured-local`.
+  `unconfigured-local`; service startup rejects this default and any value
+  containing `unpinned`.
+- `GENPOLICY_RULES_PATH` selects the Kata rules file, default `rules.rego`.
 - `GENPOLICY_SETTINGS_DIR` optionally adds `-j <dir>`.
-- Invocation shape is `genpolicy -y pod.yaml [-j <settings-dir>]`.
+- Invocation shape is
+  `genpolicy -y pod.yaml -p <rules.rego> -r [-j <settings-dir>]`.
 
 The generated `pod.yaml` is derived only from the verified signed
 `DeploymentDescriptor`: app name, namespace, service account, runtime class,
 image digest, command, args, env, ports, mounts, capabilities, resources, and
 security context.
 
-Unit coverage asserts the exact argv and manifest fields. A deployment that
-sets the env vars can call the adapter's `run()` path, which writes the manifest
-to a temporary directory and captures stdout as the generated agent policy. The
-current `/sign` endpoint does not claim genpolicy execution unless that `run()`
-path is wired into the release renderer.
+Unit coverage asserts the exact argv and manifest fields. The `/sign` endpoint
+runs this adapter after descriptor/keyring verification and before signing the
+KBS policy artifact. A failed `genpolicy` invocation rejects the signing
+request.
+
+The cap-test01 validation pin is
+`kata-containers/genpolicy@3.28.0+660e3bb6535b141c84430acb25b159857278d596`,
+matching the live Kata shim version reported on the SNP worker.
+The Dockerfile verifies and extracts `genpolicy` from
+`kata-tools-static-3.28.0-amd64.tar.zst` with digest
+`825dbf929dc5fe3f77d1a473511fd8950f08b5f81b33803c79085dbc233ab94b`, along
+with the matching `rules.rego` and settings files.
 
 Source contract checked while implementing: Kata documents `genpolicy -y
 test.yaml` and optional settings via `-j` for settings directories:

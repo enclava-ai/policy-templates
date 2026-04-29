@@ -86,6 +86,7 @@ async fn main() -> Result<()> {
     let owner_db_path = env::var("OWNER_DB_PATH").unwrap_or_else(|_| "owner-state.sqlite3".into());
     let owner_store = OwnerStore::open(PathBuf::from(owner_db_path))?;
     let genpolicy = GenpolicyConfig::from_env();
+    genpolicy.require_pinned_version()?;
     let state = AppState {
         key_material: Arc::new(key_material),
         owner_store: Arc::new(owner_store),
@@ -136,6 +137,13 @@ async fn sign_policy(
         .owner_store
         .require_owner(blobs.descriptor_envelope.descriptor.org_id)?;
     let inputs = verify_signing_inputs(blobs, &owner.owner_pubkey)?;
+    let generated_agent_policy = state.genpolicy.run(&inputs.descriptor)?;
+    tracing::info!(
+        genpolicy_version = %generated_agent_policy.invocation.version_pin,
+        manifest_bytes = generated_agent_policy.invocation.manifest_yaml.len(),
+        policy_bytes = generated_agent_policy.policy_text.len(),
+        "generated Kata agent policy from verified deployment descriptor"
+    );
     let artifact = sign_verified_policy(&req, inputs, &state.key_material, Utc::now())?;
     let verify_key = state.key_material.signing_key.verifying_key();
     verify_signed_artifact(&artifact, &verify_key)?;
