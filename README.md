@@ -93,10 +93,32 @@ descriptor and keyring blobs, verifies:
 5. template id/hash and rendered KBS policy hash.
 
 Only then does it return `SignedPolicyArtifact`.
-The v1 envelope field names match Trustee and `enclava-init`: `{ metadata,
-rego_text, signature }`, with `signature` encoded as lowercase hex. Extra
-diagnostic fields such as `rego_sha256` and `verify_pubkey_b64` are
-non-authoritative.
+The v1 envelope field names match CAP, Trustee, and `enclava-init`:
+`{ metadata, rego_text, rego_sha256, agent_policy_text, agent_policy_sha256,
+signature, verify_pubkey_b64 }`, with `signature` encoded as lowercase hex.
+Verifiers recompute Rego and agent-policy hashes from the text fields and use
+`verify_pubkey_b64` only as a diagnostic key hint.
+
+For customer/CI-signed artifacts, use the standalone generator instead of the
+HTTP signing-service authorization key:
+
+```bash
+cd signing-service
+export ENCLAVA_POLICY_ARTIFACT_SIGNING_SEED_HEX=<deployment-key-seed-hex>
+cargo run --locked --bin policy-artifact -- \
+  --request sign-request.json \
+  --owner-pubkey-hex <trusted-org-owner-pubkey-hex> \
+  --key-id github-actions:<repo>:<workflow> \
+  --out signed-policy-artifact.json
+```
+
+The command verifies the owner-signed keyring, verifies the deployment
+descriptor signature, runs the pinned `genpolicy` adapter, renders the Trustee
+policy template, and signs the resulting artifact with the same deployment key
+named by `metadata.descriptor_signing_pubkey`. CAP can then verify and transport
+that artifact without calling `POST /sign`. Prefer the environment variable for
+the signing seed in CI so the seed is not exposed through shell history or the
+process list.
 
 ## Release Requirements
 
