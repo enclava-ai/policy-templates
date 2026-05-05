@@ -41,6 +41,8 @@ pub struct SignedPolicyArtifact {
     pub agent_policy_sha256: String,
     pub signature: String,
     pub verify_pubkey_b64: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_keyring: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,6 +64,7 @@ pub struct PolicyMetadata {
 pub struct DecodedSigningBlobs {
     pub descriptor_envelope: DeploymentDescriptorEnvelope,
     pub keyring_envelope: OrgKeyringEnvelope,
+    pub keyring_envelope_value: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +73,7 @@ pub struct VerifiedSigningInputs {
     pub descriptor_signing_pubkey: VerifyingKey,
     pub descriptor_core_hash: [u8; 32],
     pub org_keyring_fingerprint: [u8; 32],
+    pub org_keyring: serde_json::Value,
 }
 
 pub fn load_signing_key_material() -> Result<SigningKeyMaterial> {
@@ -106,6 +110,7 @@ pub fn decode_signing_blobs(req: &SignRequest) -> Result<DecodedSigningBlobs> {
             &req.customer_descriptor_blob,
         )?,
         keyring_envelope: decode_json_blob("org_keyring_blob", &req.org_keyring_blob)?,
+        keyring_envelope_value: decode_json_blob("org_keyring_blob", &req.org_keyring_blob)?,
     })
 }
 
@@ -126,6 +131,7 @@ pub fn verify_signing_inputs(
         descriptor_signing_pubkey: deployer,
         descriptor_core_hash,
         org_keyring_fingerprint: keyring_fingerprint(keyring),
+        org_keyring: blobs.keyring_envelope_value,
     })
 }
 
@@ -193,6 +199,7 @@ pub fn sign_verified_policy(
         agent_policy_sha256: hex::encode(agent_policy_hash),
         signature: hex::encode(signature.to_bytes()),
         verify_pubkey_b64: B64.encode(key_material.signing_key.verifying_key().to_bytes()),
+        org_keyring: Some(inputs.org_keyring),
     })
 }
 
@@ -439,10 +446,12 @@ mod tests {
         let owner = fixed_owner_key();
         let deployer = fixed_deployer_key();
         let keyring = sign_keyring(&owner, fixed_keyring(&owner, &deployer));
+        let keyring_envelope_value = serde_json::to_value(&keyring).unwrap();
         verify_signing_inputs(
             DecodedSigningBlobs {
                 descriptor_envelope: signed_descriptor_envelope(descriptor_for_service()),
                 keyring_envelope: keyring,
+                keyring_envelope_value,
             },
             &owner.verifying_key(),
         )
@@ -541,10 +550,12 @@ mod tests {
         let mut descriptor_envelope = signed_descriptor_envelope(descriptor_for_service());
         descriptor_envelope.descriptor.namespace = "cap-mutated".to_string();
         let keyring = sign_keyring(&owner, fixed_keyring(&owner, &deployer));
+        let keyring_envelope_value = serde_json::to_value(&keyring).unwrap();
         let err = verify_signing_inputs(
             DecodedSigningBlobs {
                 descriptor_envelope,
                 keyring_envelope: keyring,
+                keyring_envelope_value,
             },
             &owner.verifying_key(),
         )
