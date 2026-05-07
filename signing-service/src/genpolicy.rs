@@ -450,14 +450,29 @@ fn cap_volumes(descriptor: &DeploymentDescriptor) -> Vec<Value> {
     vec![
         json!({"name": "logs", "emptyDir": {}}),
         json!({"name": "ownership-signal", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}),
-        json!({"name": "tenant-ingress-caddyfile", "configMap": {"name": format!("{}-tenant-ingress", descriptor.app_name), "defaultMode": 0o444}}),
-        json!({"name": "startup", "configMap": {"name": format!("{}-startup", descriptor.app_name), "defaultMode": 0o555}}),
+        config_map_volume(
+            "tenant-ingress-caddyfile",
+            format!("{}-tenant-ingress", descriptor.app_name),
+        ),
+        config_map_volume("startup", format!("{}-startup", descriptor.app_name)),
         json!({"name": "unlock-socket", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}),
         json!({"name": "enclava-tools", "emptyDir": {}}),
         json!({"name": "state-mount", "emptyDir": {}}),
         json!({"name": "tls-state-mount", "emptyDir": {}}),
-        json!({"name": "enclava-init-config", "configMap": {"name": format!("{}-enclava-init", descriptor.app_name), "defaultMode": 0o400}}),
+        config_map_volume(
+            "enclava-init-config",
+            format!("{}-enclava-init", descriptor.app_name),
+        ),
     ]
+}
+
+fn config_map_volume(name: &str, config_map_name: String) -> Value {
+    json!({
+        "name": name,
+        "configMap": {
+            "name": config_map_name,
+        },
+    })
 }
 
 #[derive(Serialize)]
@@ -541,6 +556,7 @@ mod tests {
         assert!(invocation
             .manifest_yaml
             .contains("serviceAccountName: cap-demo-sa"));
+        assert!(!invocation.manifest_yaml.contains("defaultMode"));
         assert!(invocation
             .manifest_yaml
             .contains("image: ghcr.io/enclava-ai/demo@sha256:aaaa"));
