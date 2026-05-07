@@ -20,7 +20,7 @@ const KATA_RUNTIME_HANDLER: &str = "kata-qemu-snp";
 const KBS_URL: &str = "http://kbs-service.trustee-operator-system.svc.cluster.local:8080";
 const ATTESTATION_PROXY_IMAGE_REPO: &str = "ghcr.io/enclava-ai/attestation-proxy";
 const CADDY_INGRESS_IMAGE_REPO: &str = "ghcr.io/enclava-ai/caddy-ingress";
-const ENCLAVA_WAIT_EXEC_PATH: &str = "/enclava-tools/enclava-wait-exec";
+const ENCLAVA_WAIT_EXEC_PATH: &str = "/usr/local/bin/enclava-wait-exec";
 
 #[derive(Debug, Clone)]
 pub struct GenpolicyConfig {
@@ -302,12 +302,9 @@ fn render_pod_manifest(descriptor: &DeploymentDescriptor) -> Result<String> {
                 "fsGroup": 10001,
                 "supplementalGroups": [6],
             },
-            "initContainers": [
-                attestation_proxy_container(descriptor),
-                enclava_tools_container()?,
-            ],
             "containers": [
                 app_container(descriptor),
+                attestation_proxy_container(descriptor),
                 tenant_ingress_container(descriptor),
                 enclava_init_container()?,
             ],
@@ -478,7 +475,6 @@ fn app_container(descriptor: &DeploymentDescriptor) -> Value {
     let oci = &descriptor.oci_runtime_spec;
     let mut volume_mounts = vec![
         mount("startup", "/startup", true),
-        mount("enclava-tools", "/enclava-tools", true),
         mount("unlock-socket", "/run/enclava", false),
         mount_with_propagation("state-mount", "/state", "HostToContainer"),
     ];
@@ -524,7 +520,6 @@ fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Value {
     json!({
         "name": "attestation-proxy",
         "image": image_ref(ATTESTATION_PROXY_IMAGE_REPO, &descriptor.sidecars.attestation_proxy_digest),
-        "restartPolicy": "Always",
         "command": ["/attestation-proxy"],
         "ports": [
             {"containerPort": 8081, "name": "attest-http"},
@@ -560,21 +555,6 @@ fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Value {
     })
 }
 
-fn enclava_tools_container() -> Result<Value> {
-    Ok(json!({
-        "name": "enclava-tools",
-        "image": enclava_init_image()?,
-        "command": ["/bin/sh", "-ec"],
-        "args": ["cp /usr/local/bin/enclava-wait-exec /enclava-tools/enclava-wait-exec && chmod 0555 /enclava-tools/enclava-wait-exec"],
-        "env": kubernetes_service_env(),
-        "volumeMounts": [
-            mount("enclava-tools", "/enclava-tools", false),
-        ],
-        "securityContext": security_context(0, 0, true, false, false, caps(&["ALL"], &[])),
-        "resources": resources("10m", "16Mi", "50m", "32Mi"),
-    }))
-}
-
 fn tenant_ingress_container(descriptor: &DeploymentDescriptor) -> Value {
     json!({
         "name": "tenant-ingress",
@@ -596,7 +576,6 @@ fn tenant_ingress_container(descriptor: &DeploymentDescriptor) -> Value {
         ]),
         "volumeMounts": [
             mount("tenant-ingress-caddyfile", "/etc/caddy", true),
-            mount("enclava-tools", "/enclava-tools", true),
             mount("unlock-socket", "/run/enclava", false),
             mount_with_propagation("state-mount", "/state", "HostToContainer"),
             mount_with_propagation("tls-state-mount", "/state/tls-state", "HostToContainer"),
@@ -643,7 +622,6 @@ fn cap_volumes(descriptor: &DeploymentDescriptor) -> Vec<Value> {
         ),
         config_map_volume("startup", format!("{}-startup", descriptor.app_name)),
         json!({"name": "unlock-socket", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}),
-        json!({"name": "enclava-tools", "emptyDir": {}}),
         json!({"name": "state-mount", "emptyDir": {}}),
         json!({"name": "tls-state-mount", "emptyDir": {}}),
         config_map_volume(
@@ -728,6 +706,7 @@ mod tests {
             .manifest_yaml
             .contains("runtimeClassName: kata-qemu-snp"));
         assert!(invocation.manifest_yaml.contains("name: demo-0"));
+        assert!(!invocation.manifest_yaml.contains("initContainers:"));
         assert!(invocation
             .manifest_yaml
             .contains("io.containerd.cri.runtime-handler: kata-qemu-snp"));
@@ -755,6 +734,9 @@ mod tests {
         assert!(invocation
             .manifest_yaml
             .contains("image: ghcr.io/enclava-ai/demo@sha256:aaaa"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("- /usr/local/bin/enclava-wait-exec"));
         assert!(invocation.manifest_yaml.contains("- name: A"));
         assert!(invocation.manifest_yaml.contains("value: '1'"));
     }
