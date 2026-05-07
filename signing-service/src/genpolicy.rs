@@ -145,8 +145,6 @@ fn render_pod_manifest(descriptor: &DeploymentDescriptor) -> Result<String> {
         },
         "spec": {
             "runtimeClassName": descriptor.expected_runtime_class,
-            "serviceAccountName": descriptor.service_account,
-            "automountServiceAccountToken": false,
             "enableServiceLinks": false,
             "securityContext": {
                 "fsGroup": 10001,
@@ -591,12 +589,10 @@ mod tests {
         assert!(invocation.manifest_yaml.contains(
             "io.katacontainers.config.runtime.cc_init_data: enclava-dynamic-cc-init-data"
         ));
-        assert!(invocation
+        assert!(!invocation.manifest_yaml.contains("serviceAccountName:"));
+        assert!(!invocation
             .manifest_yaml
-            .contains("serviceAccountName: cap-demo-sa"));
-        assert!(invocation
-            .manifest_yaml
-            .contains("automountServiceAccountToken: false"));
+            .contains("automountServiceAccountToken"));
         assert!(invocation
             .manifest_yaml
             .contains("enableServiceLinks: false"));
