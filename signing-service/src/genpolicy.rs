@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -101,6 +102,12 @@ impl GenpolicyConfig {
         std::fs::write(&manifest_path, &invocation.manifest_yaml)
             .with_context(|| format!("writing {}", manifest_path.display()))?;
 
+        let effective_settings_dir = if let Some(settings_dir) = &self.settings_dir {
+            Some(prepare_cap_settings_dir(settings_dir, dir.path())?)
+        } else {
+            None
+        };
+
         let mut args = vec![
             "-y".to_string(),
             manifest_path.display().to_string(),
@@ -108,7 +115,7 @@ impl GenpolicyConfig {
             self.rules_path.display().to_string(),
             "-r".to_string(),
         ];
-        if let Some(settings_dir) = &self.settings_dir {
+        if let Some(settings_dir) = &effective_settings_dir {
             args.push("-j".to_string());
             args.push(settings_dir.display().to_string());
         }
@@ -130,6 +137,80 @@ impl GenpolicyConfig {
                 .context("genpolicy output is not UTF-8")?,
             invocation,
         })
+    }
+}
+
+fn prepare_cap_settings_dir(source_dir: &Path, work_dir: &Path) -> Result<PathBuf> {
+    let dest_dir = work_dir.join("genpolicy-settings");
+    fs::create_dir_all(&dest_dir).context("creating CAP genpolicy settings directory")?;
+
+    let settings_path = source_dir.join("genpolicy-settings.json");
+    let raw = fs::read_to_string(&settings_path)
+        .with_context(|| format!("reading {}", settings_path.display()))?;
+    let mut settings: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing {}", settings_path.display()))?;
+    remove_service_account_token_mounts(&mut settings);
+    let rendered =
+        serde_json::to_vec_pretty(&settings).context("serializing CAP genpolicy settings")?;
+    fs::write(dest_dir.join("genpolicy-settings.json"), rendered)
+        .context("writing CAP genpolicy settings")?;
+
+    let source_settings_d = source_dir.join("genpolicy-settings.d");
+    if source_settings_d.is_dir() {
+        copy_dir_all(&source_settings_d, &dest_dir.join("genpolicy-settings.d"))?;
+    }
+
+    Ok(dest_dir)
+}
+
+fn copy_dir_all(source: &Path, dest: &Path) -> Result<()> {
+    fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
+    for entry in fs::read_dir(source).with_context(|| format!("reading {}", source.display()))? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_dir_all(&source_path, &dest_path)?;
+        } else {
+            fs::copy(&source_path, &dest_path).with_context(|| {
+                format!(
+                    "copying {} to {}",
+                    source_path.display(),
+                    dest_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_service_account_token_mounts(settings: &mut Value) {
+    const TOKEN_MOUNT_DESTINATIONS: &[&str] = &[
+        "/var/run/secrets/kubernetes.io/serviceaccount",
+        "/var/run/secrets/azure/tokens",
+    ];
+
+    if let Some(mounts) = settings
+        .pointer_mut("/other_container/Mounts")
+        .and_then(Value::as_array_mut)
+    {
+        mounts.retain(|mount| {
+            !mount
+                .get("destination")
+                .and_then(Value::as_str)
+                .is_some_and(|destination| TOKEN_MOUNT_DESTINATIONS.contains(&destination))
+        });
+    }
+
+    if let Some(destinations) = settings
+        .pointer_mut("/mount_destinations")
+        .and_then(Value::as_array_mut)
+    {
+        destinations.retain(|destination| {
+            !destination
+                .as_str()
+                .is_some_and(|destination| TOKEN_MOUNT_DESTINATIONS.contains(&destination))
+        });
     }
 }
 
@@ -615,5 +696,31 @@ mod tests {
             settings_dir: None,
         };
         assert!(config.require_pinned_version().is_err());
+    }
+
+    #[test]
+    fn removes_default_service_account_token_mounts_from_settings() {
+        let mut settings = json!({
+            "other_container": {
+                "Mounts": [
+                    {"destination": "/etc/hosts"},
+                    {"destination": "/var/run/secrets/kubernetes.io/serviceaccount"},
+                    {"destination": "/var/run/secrets/azure/tokens"}
+                ]
+            },
+            "mount_destinations": [
+                "/etc/hosts",
+                "/var/run/secrets/kubernetes.io/serviceaccount",
+                "/var/run/secrets/azure/tokens"
+            ]
+        });
+
+        remove_service_account_token_mounts(&mut settings);
+
+        let mounts = settings["other_container"]["Mounts"].as_array().unwrap();
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0]["destination"], "/etc/hosts");
+        let destinations = settings["mount_destinations"].as_array().unwrap();
+        assert_eq!(destinations, &[json!("/etc/hosts")]);
     }
 }
