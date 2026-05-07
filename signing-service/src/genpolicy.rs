@@ -145,7 +145,6 @@ fn render_pod_manifest(descriptor: &DeploymentDescriptor) -> Result<String> {
         },
         "spec": {
             "runtimeClassName": descriptor.expected_runtime_class,
-            "enableServiceLinks": false,
             "securityContext": {
                 "fsGroup": 10001,
                 "fsGroupChangePolicy": "OnRootMismatch",
@@ -593,9 +592,7 @@ mod tests {
         assert!(!invocation
             .manifest_yaml
             .contains("automountServiceAccountToken"));
-        assert!(invocation
-            .manifest_yaml
-            .contains("enableServiceLinks: false"));
+        assert!(!invocation.manifest_yaml.contains("enableServiceLinks"));
         assert!(invocation.manifest_yaml.contains("fsGroup: 10001"));
         assert!(invocation.manifest_yaml.contains("supplementalGroups:"));
         assert!(!invocation.manifest_yaml.contains("defaultMode"));
