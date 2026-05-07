@@ -189,7 +189,7 @@ fn image_ref(repo: &str, digest: &str) -> String {
 fn enclava_init_image() -> Result<String> {
     let image = match std::env::var("ENCLAVA_INIT_IMAGE") {
         Ok(image) => image,
-        Err(err) if cfg!(test) => {
+        Err(_err) if cfg!(test) => {
             "ghcr.io/enclava-ai/enclava-init@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()
         }
         Err(err) => return Err(err).context("ENCLAVA_INIT_IMAGE must be set for CAP genpolicy sidecars"),
