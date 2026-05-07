@@ -275,6 +275,7 @@ fn normalize_cap_generated_policy(policy_text: &str) -> String {
     let normalized = lines.concat();
     let normalized = normalize_rootfs_propagation(&normalized);
     let normalized = normalize_cap_storage_mounts(&normalized);
+    let normalized = normalize_cap_sandbox_storages(&normalized);
     normalize_privileged_caps_placeholder(&normalized)
 }
 
@@ -379,6 +380,39 @@ allow_cap_storage_options(p_storage, i_storage) if {
         .replace(STORAGE_FS_GROUP_CHECK, STORAGE_FS_GROUP_ALLOW)
         .replace(STORAGE_OPTIONS_CHECK, STORAGE_OPTIONS_ALLOW);
     insert_policy_helper(&normalized, STORAGE_HELPERS)
+}
+
+fn normalize_cap_sandbox_storages(policy_text: &str) -> String {
+    const SANDBOX_STORAGE_CHECK: &str = "    i_storage == p_storage\n";
+    const SANDBOX_STORAGE_ALLOW: &str = "    allow_cap_sandbox_storage(p_storage, i_storage)\n";
+    const SANDBOX_STORAGE_HELPERS: &str = r#"
+allow_cap_sandbox_storage(p_storage, i_storage) if {
+    i_storage == p_storage
+}
+
+allow_cap_sandbox_storage(_p_storage, i_storage) if {
+    i_storage.driver == "9p"
+    i_storage.driver_options == []
+    i_storage.fs_group == null
+    i_storage.fstype == "9p"
+    i_storage.mount_point == "/run/kata-containers/shared/containers/"
+    count(i_storage.options) == 3
+    "trans=virtio,version=9p2000.L,cache=mmap" in i_storage.options
+    "nodev" in i_storage.options
+    "msize=8192" in i_storage.options
+    i_storage.shared == false
+    i_storage.source == "kataShared"
+}
+"#;
+
+    if policy_text.contains("allow_cap_sandbox_storage")
+        || !policy_text.contains(SANDBOX_STORAGE_CHECK)
+    {
+        return policy_text.to_string();
+    }
+
+    let normalized = policy_text.replace(SANDBOX_STORAGE_CHECK, SANDBOX_STORAGE_ALLOW);
+    insert_policy_helper(&normalized, SANDBOX_STORAGE_HELPERS)
 }
 
 fn insert_policy_helper(policy_text: &str, helper: &str) -> String {
@@ -1033,17 +1067,25 @@ allow_storage_options(p_storage, i_storage) if {
     p_storage.driver != "overlayfs"
     p_storage.options == i_storage.options
 }
+
+allow_sandbox_storage(p_storages, i_storage) if {
+    some p_storage in p_storages
+    i_storage == p_storage
+}
 "#;
 
         let normalized = normalize_cap_generated_policy(policy);
 
         assert!(normalized.contains("allow_cap_mount_options(p_mount, i_mount)"));
+        assert!(normalized.contains("allow_cap_sandbox_storage(p_storage, i_storage)"));
         assert!(normalized.contains(r#"i_mount.options == ["rbind", "rslave", "rw"]"#));
         assert!(normalized.contains(r#"i_mount.options == ["rbind", "rshared", "rw"]"#));
         assert!(normalized.contains("allow_cap_storage_fs_group(p_storage, i_storage)"));
         assert!(normalized.contains("allow_cap_storage_options(p_storage, i_storage)"));
         assert!(normalized.contains(r#"p_storage.options == ["fsgid=10001"]"#));
         assert!(normalized.contains("i_storage.fs_group.group_id == 10001"));
+        assert!(normalized.contains(r#"i_storage.driver == "9p""#));
+        assert!(normalized.contains(r#"i_storage.source == "kataShared""#));
         assert!(!normalized.contains(
             "    p_mount.type_ == i_mount.type_\n    p_mount.options == i_mount.options\n\n    mount_source_allows"
         ));
