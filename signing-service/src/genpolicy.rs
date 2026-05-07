@@ -130,11 +130,12 @@ impl GenpolicyConfig {
 }
 
 fn render_pod_manifest(descriptor: &DeploymentDescriptor) -> Result<String> {
+    let pod_name = format!("{}-0", descriptor.app_name);
     let pod = PodManifest {
         api_version: "v1",
         kind: "Pod",
         metadata: Metadata {
-            name: &descriptor.app_name,
+            name: &pod_name,
             namespace: &descriptor.namespace,
             annotations: cap_runtime_annotations(),
         },
@@ -412,6 +413,7 @@ mod tests {
         assert!(invocation
             .manifest_yaml
             .contains("runtimeClassName: kata-qemu-snp"));
+        assert!(invocation.manifest_yaml.contains("name: demo-0"));
         assert!(invocation
             .manifest_yaml
             .contains("io.containerd.cri.runtime-handler: kata-qemu-snp"));
