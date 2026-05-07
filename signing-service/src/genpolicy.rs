@@ -288,6 +288,10 @@ allow_cap_rootfs_propagation(rootfs_propagation) if {
 allow_cap_rootfs_propagation(rootfs_propagation) if {
     rootfs_propagation == "rshared"
 }
+
+allow_cap_rootfs_propagation(rootfs_propagation) if {
+    rootfs_propagation == "rslave"
+}
 "#;
 
     if !policy_text.contains(ROOTFS_PRECHECK)
@@ -894,6 +898,7 @@ allow_create_container_input if {
 
         assert!(normalized.contains("allow_cap_rootfs_propagation(i_linux.RootfsPropagation)"));
         assert!(normalized.contains("rootfs_propagation == \"rshared\""));
+        assert!(normalized.contains("rootfs_propagation == \"rslave\""));
         assert!(!normalized.contains("count(i_linux.RootfsPropagation) == 0"));
     }
 
