@@ -273,7 +273,8 @@ fn normalize_cap_generated_policy(policy_text: &str) -> String {
     }
 
     let normalized = lines.concat();
-    normalize_rootfs_propagation(&normalized)
+    let normalized = normalize_rootfs_propagation(&normalized);
+    normalize_privileged_caps_placeholder(&normalized)
 }
 
 fn normalize_rootfs_propagation(policy_text: &str) -> String {
@@ -307,6 +308,10 @@ allow_cap_rootfs_propagation(rootfs_propagation) if {
     } else {
         format!("{ROOTFS_HELPER}\n{with_allow}")
     }
+}
+
+fn normalize_privileged_caps_placeholder(policy_text: &str) -> String {
+    policy_text.replace("\"CAP_$(privileged_caps)\"", "\"$(privileged_caps)\"")
 }
 
 fn normalized_additional_gids(group_lines: &[String]) -> Vec<String> {
@@ -890,5 +895,36 @@ allow_create_container_input if {
         assert!(normalized.contains("allow_cap_rootfs_propagation(i_linux.RootfsPropagation)"));
         assert!(normalized.contains("rootfs_propagation == \"rshared\""));
         assert!(!normalized.contains("count(i_linux.RootfsPropagation) == 0"));
+    }
+
+    #[test]
+    fn normalizes_privileged_caps_placeholder() {
+        let policy = r#"policy_data := {
+  "containers": [
+    {
+      "OCI": {
+        "Process": {
+          "Capabilities": {
+            "Bounding": [
+              "CAP_$(privileged_caps)"
+            ],
+            "Effective": [
+              "CAP_$(privileged_caps)"
+            ],
+            "Permitted": [
+              "CAP_$(privileged_caps)"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}
+"#;
+
+        let normalized = normalize_cap_generated_policy(policy);
+
+        assert!(normalized.contains("\"$(privileged_caps)\""));
+        assert!(!normalized.contains("CAP_$(privileged_caps)"));
     }
 }
