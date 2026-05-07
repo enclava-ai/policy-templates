@@ -790,6 +790,8 @@ fn tenant_ingress_container(descriptor: &DeploymentDescriptor) -> Value {
             value_env("CADDY_SEED_PATH", "/state/caddy/seed"),
             value_env("VOLUME_MOUNT_POINT", "/state/tls-state"),
             value_env("XDG_DATA_HOME", "/state/tls-state/caddy"),
+            value_env("XDG_CONFIG_HOME", "/state/tls-state/caddy/config"),
+            value_env("HOME", "/state/tls-state"),
             value_env("ENCLAVA_CONTAINER_NAME", "tenant-ingress"),
             value_env("ENCLAVA_STARTED_DIR", "/run/enclava/containers"),
             value_env("ENCLAVA_INIT_READY_FILE", "/run/enclava/init-ready"),
@@ -973,6 +975,10 @@ mod tests {
         assert!(invocation.manifest_yaml.contains("$(privileged_caps)"));
         assert!(invocation.manifest_yaml.contains("readinessProbe:"));
         assert!(invocation.manifest_yaml.contains("--probe-ready"));
+        assert!(invocation.manifest_yaml.contains("name: XDG_CONFIG_HOME"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("value: /state/tls-state/caddy/config"));
         assert!(invocation.manifest_yaml.contains("- name: A"));
         assert!(invocation.manifest_yaml.contains("value: '1'"));
     }
