@@ -6,8 +6,9 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
+use serde_json::{json, Map, Value};
 
-use crate::descriptor::{DeploymentDescriptor, EnvVar, Mount, OciRuntimeSpec, Port, Resources};
+use crate::descriptor::{DeploymentDescriptor, EnvVar, Resources};
 
 const KATA_RUNTIME_HANDLER_ANNOTATION: &str = "io.containerd.cri.runtime-handler";
 const KATA_KERNEL_PARAMS_ANNOTATION: &str = "io.katacontainers.config.hypervisor.kernel_params";
@@ -16,6 +17,9 @@ const KATA_HYPERVISOR_CC_INIT_DATA_ANNOTATION: &str =
 const KATA_RUNTIME_CC_INIT_DATA_ANNOTATION: &str = "io.katacontainers.config.runtime.cc_init_data";
 const KATA_RUNTIME_HANDLER: &str = "kata-qemu-snp";
 const KBS_URL: &str = "http://kbs-service.trustee-operator-system.svc.cluster.local:8080";
+const ATTESTATION_PROXY_IMAGE_REPO: &str = "ghcr.io/enclava-ai/attestation-proxy";
+const CADDY_INGRESS_IMAGE_REPO: &str = "ghcr.io/enclava-ai/caddy-ingress";
+const ENCLAVA_WAIT_EXEC_PATH: &str = "/enclava-tools/enclava-wait-exec";
 
 #[derive(Debug, Clone)]
 pub struct GenpolicyConfig {
@@ -131,21 +135,29 @@ impl GenpolicyConfig {
 
 fn render_pod_manifest(descriptor: &DeploymentDescriptor) -> Result<String> {
     let pod_name = format!("{}-0", descriptor.app_name);
-    let pod = PodManifest {
-        api_version: "v1",
-        kind: "Pod",
-        metadata: Metadata {
-            name: &pod_name,
-            namespace: &descriptor.namespace,
-            annotations: cap_runtime_annotations(),
+    let pod = json!({
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": pod_name,
+            "namespace": descriptor.namespace,
+            "annotations": cap_runtime_annotations(),
         },
-        spec: PodSpec {
-            runtime_class_name: &descriptor.expected_runtime_class,
-            service_account_name: &descriptor.service_account,
-            containers: vec![container_from_descriptor(descriptor)],
-            volumes: volumes_from_mounts(&descriptor.oci_runtime_spec.mounts),
+        "spec": {
+            "runtimeClassName": descriptor.expected_runtime_class,
+            "serviceAccountName": descriptor.service_account,
+            "initContainers": [
+                attestation_proxy_container(descriptor),
+                enclava_tools_container()?,
+            ],
+            "containers": [
+                app_container(descriptor),
+                tenant_ingress_container(descriptor),
+                enclava_init_container()?,
+            ],
+            "volumes": cap_volumes(descriptor),
         },
-    };
+    });
     serde_yaml::to_string(&pod).context("rendering genpolicy pod manifest")
 }
 
@@ -170,182 +182,284 @@ fn cap_runtime_annotations() -> BTreeMap<&'static str, String> {
     ])
 }
 
-fn container_from_descriptor(descriptor: &DeploymentDescriptor) -> Container<'_> {
-    let oci = &descriptor.oci_runtime_spec;
-    Container {
-        name: &descriptor.app_name,
-        image: &descriptor.image_ref,
-        command: &oci.command,
-        args: &oci.args,
-        env: oci.env.iter().map(Env::from).collect(),
-        ports: oci.ports.iter().map(ContainerPort::from).collect(),
-        volume_mounts: oci
-            .mounts
-            .iter()
-            .enumerate()
-            .map(VolumeMount::from)
-            .collect(),
-        security_context: SecurityContextYaml::from(oci),
-        resources: ResourcesYaml::from(&oci.resources),
-    }
+fn image_ref(repo: &str, digest: &str) -> String {
+    format!("{repo}@{digest}")
 }
 
-fn volumes_from_mounts(mounts: &[Mount]) -> Vec<Volume<'_>> {
-    mounts
-        .iter()
-        .enumerate()
-        .map(|(idx, mount)| Volume {
-            name: format!("mount-{idx}"),
-            host_path: HostPath {
-                path: mount.source.as_str(),
-                kind: mount.mount_type.as_str(),
+fn enclava_init_image() -> Result<String> {
+    let image = match std::env::var("ENCLAVA_INIT_IMAGE") {
+        Ok(image) => image,
+        Err(err) if cfg!(test) => {
+            "ghcr.io/enclava-ai/enclava-init@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()
+        }
+        Err(err) => return Err(err).context("ENCLAVA_INIT_IMAGE must be set for CAP genpolicy sidecars"),
+    };
+    if !image.contains("@sha256:") {
+        bail!("ENCLAVA_INIT_IMAGE must be digest-pinned with @sha256:");
+    }
+    Ok(image)
+}
+
+fn value_env(name: &str, value: impl Into<String>) -> Value {
+    json!({"name": name, "value": value.into()})
+}
+
+fn field_env(name: &str, field_path: &str) -> Value {
+    json!({
+        "name": name,
+        "valueFrom": {
+            "fieldRef": {
+                "fieldPath": field_path,
             },
-        })
-        .collect()
+        },
+    })
 }
 
-#[derive(Serialize)]
-struct PodManifest<'a> {
-    #[serde(rename = "apiVersion")]
-    api_version: &'a str,
-    kind: &'a str,
-    metadata: Metadata<'a>,
-    spec: PodSpec<'a>,
+fn mount(name: &str, mount_path: &str, read_only: bool) -> Value {
+    json!({
+        "name": name,
+        "mountPath": mount_path,
+        "readOnly": read_only,
+    })
 }
 
-#[derive(Serialize)]
-struct Metadata<'a> {
-    name: &'a str,
-    namespace: &'a str,
-    annotations: BTreeMap<&'a str, String>,
+fn mount_with_propagation(name: &str, mount_path: &str, propagation: &str) -> Value {
+    json!({
+        "name": name,
+        "mountPath": mount_path,
+        "mountPropagation": propagation,
+    })
 }
 
-#[derive(Serialize)]
-struct PodSpec<'a> {
-    #[serde(rename = "runtimeClassName")]
-    runtime_class_name: &'a str,
-    #[serde(rename = "serviceAccountName")]
-    service_account_name: &'a str,
-    containers: Vec<Container<'a>>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    volumes: Vec<Volume<'a>>,
+fn mount_with_subpath(name: &str, mount_path: &str, sub_path: &str, propagation: &str) -> Value {
+    json!({
+        "name": name,
+        "mountPath": mount_path,
+        "subPath": sub_path,
+        "mountPropagation": propagation,
+    })
 }
 
-#[derive(Serialize)]
-struct Container<'a> {
-    name: &'a str,
-    image: &'a str,
-    command: &'a [String],
-    args: &'a [String],
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    env: Vec<Env<'a>>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    ports: Vec<ContainerPort<'a>>,
-    #[serde(rename = "volumeMounts", skip_serializing_if = "Vec::is_empty")]
-    volume_mounts: Vec<VolumeMount<'a>>,
-    #[serde(rename = "securityContext")]
-    security_context: SecurityContextYaml<'a>,
-    resources: ResourcesYaml<'a>,
+fn storage_subdir(path: &str) -> String {
+    path.trim_start_matches('/').replace('/', "-")
 }
 
-#[derive(Serialize)]
-struct Env<'a> {
-    name: &'a str,
-    value: &'a str,
-}
-
-impl<'a> From<&'a EnvVar> for Env<'a> {
-    fn from(value: &'a EnvVar) -> Self {
-        Self {
-            name: &value.name,
-            value: &value.value,
-        }
+fn caps(drop: &[&str], add: &[&str]) -> Value {
+    let mut capabilities = Map::new();
+    capabilities.insert(
+        "drop".to_string(),
+        Value::Array(drop.iter().map(|value| json!(value)).collect()),
+    );
+    if !add.is_empty() {
+        capabilities.insert(
+            "add".to_string(),
+            Value::Array(add.iter().map(|value| json!(value)).collect()),
+        );
     }
+    Value::Object(capabilities)
 }
 
-#[derive(Serialize)]
-struct ContainerPort<'a> {
-    #[serde(rename = "containerPort")]
-    container_port: u32,
-    protocol: &'a str,
-}
-
-impl<'a> From<&'a Port> for ContainerPort<'a> {
-    fn from(value: &'a Port) -> Self {
-        Self {
-            container_port: value.container_port,
-            protocol: &value.protocol,
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct VolumeMount<'a> {
-    name: String,
-    #[serde(rename = "mountPath")]
-    mount_path: &'a str,
-    #[serde(rename = "readOnly")]
-    read_only: bool,
-}
-
-impl<'a> From<(usize, &'a Mount)> for VolumeMount<'a> {
-    fn from((idx, value): (usize, &'a Mount)) -> Self {
-        Self {
-            name: format!("mount-{idx}"),
-            mount_path: &value.destination,
-            read_only: value.options.iter().any(|option| option == "ro"),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct Volume<'a> {
-    name: String,
-    #[serde(rename = "hostPath")]
-    host_path: HostPath<'a>,
-}
-
-#[derive(Serialize)]
-struct HostPath<'a> {
-    path: &'a str,
-    #[serde(rename = "type")]
-    kind: &'a str,
-}
-
-#[derive(Serialize)]
-struct SecurityContextYaml<'a> {
-    #[serde(rename = "runAsUser")]
+fn security_context(
     run_as_user: u32,
-    #[serde(rename = "runAsGroup")]
     run_as_group: u32,
-    #[serde(rename = "readOnlyRootFilesystem")]
+    run_as_non_root: bool,
     read_only_root_fs: bool,
-    #[serde(rename = "allowPrivilegeEscalation")]
     allow_privilege_escalation: bool,
     privileged: bool,
-    capabilities: CapabilitiesYaml<'a>,
+    capabilities: Value,
+) -> Value {
+    json!({
+        "runAsUser": run_as_user,
+        "runAsGroup": run_as_group,
+        "runAsNonRoot": run_as_non_root,
+        "readOnlyRootFilesystem": read_only_root_fs,
+        "allowPrivilegeEscalation": allow_privilege_escalation,
+        "privileged": privileged,
+        "capabilities": capabilities,
+    })
 }
 
-impl<'a> From<&'a OciRuntimeSpec> for SecurityContextYaml<'a> {
-    fn from(value: &'a OciRuntimeSpec) -> Self {
-        Self {
-            run_as_user: value.security_context.run_as_user,
-            run_as_group: value.security_context.run_as_group,
-            read_only_root_fs: value.security_context.read_only_root_fs,
-            allow_privilege_escalation: value.security_context.allow_privilege_escalation,
-            privileged: value.security_context.privileged,
-            capabilities: CapabilitiesYaml {
-                add: &value.capabilities.add,
-                drop: &value.capabilities.drop,
-            },
-        }
+fn resources(
+    request_cpu: &str,
+    request_memory: &str,
+    limit_cpu: &str,
+    limit_memory: &str,
+) -> Value {
+    json!({
+        "requests": {
+            "cpu": request_cpu,
+            "memory": request_memory,
+        },
+        "limits": {
+            "cpu": limit_cpu,
+            "memory": limit_memory,
+        },
+    })
+}
+
+fn app_container(descriptor: &DeploymentDescriptor) -> Value {
+    let oci = &descriptor.oci_runtime_spec;
+    let mut volume_mounts = vec![
+        mount("startup", "/startup", true),
+        mount("enclava-tools", "/enclava-tools", true),
+        mount("unlock-socket", "/run/enclava", false),
+        mount_with_propagation("state-mount", "/state", "HostToContainer"),
+    ];
+    for storage_path in oci
+        .mounts
+        .iter()
+        .filter(|mount| mount.source == "state-mount")
+        .map(|mount| mount.destination.as_str())
+        .filter(|path| *path != "/state")
+    {
+        volume_mounts.push(mount_with_subpath(
+            "state-mount",
+            storage_path,
+            &storage_subdir(storage_path),
+            "HostToContainer",
+        ));
     }
+
+    json!({
+        "name": "web",
+        "image": descriptor.image_ref,
+        "command": [ENCLAVA_WAIT_EXEC_PATH],
+        "args": oci.args,
+        "env": oci.env.iter().map(|env| value_env(&env.name, &env.value)).collect::<Vec<_>>(),
+        "ports": oci.ports.iter().map(|port| json!({
+            "containerPort": port.container_port,
+            "protocol": port.protocol,
+        })).collect::<Vec<_>>(),
+        "volumeMounts": volume_mounts,
+        "securityContext": security_context(10001, 10001, true, true, false, false, caps(&["ALL"], &[])),
+        "resources": ResourcesYaml::from(&oci.resources),
+    })
 }
 
-#[derive(Serialize)]
-struct CapabilitiesYaml<'a> {
-    add: &'a [String],
-    drop: &'a [String],
+fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Value {
+    json!({
+        "name": "attestation-proxy",
+        "image": image_ref(ATTESTATION_PROXY_IMAGE_REPO, &descriptor.sidecars.attestation_proxy_digest),
+        "restartPolicy": "Always",
+        "command": ["/attestation-proxy"],
+        "ports": [
+            {"containerPort": 8081, "name": "attest-http"},
+            {"containerPort": 8443, "name": "attestation"},
+        ],
+        "env": [
+            value_env("ATTESTATION_WORKLOAD_CONTAINER", "web"),
+            field_env("ATTESTATION_POD_NAME", "metadata.name"),
+            field_env("ATTESTATION_POD_NAMESPACE", "metadata.namespace"),
+            value_env("ATTESTATION_PROFILE", "coco-sev-snp"),
+            value_env("ATTESTATION_RUNTIME_CLASS", "kata-qemu-snp"),
+            value_env("ATTESTATION_WORKLOAD_IMAGE", descriptor.image_ref.clone()),
+            value_env("ATTESTATION_TLS_PORT", "8443"),
+            value_env("TEE_DOMAIN", descriptor.tee_domain.clone()),
+            value_env("STORAGE_OWNERSHIP_MODE", "auto-unlock"),
+            value_env("INSTANCE_ID", format!("{}-{}", descriptor.namespace, descriptor.app_name)),
+            value_env("OWNER_CIPHERTEXT_BACKEND", "kbs-resource"),
+            value_env("OWNER_SEED_HANDOFF_SLOTS", "app-data"),
+            value_env("OWNERSHIP_MOUNT_PATH", "/run/ownership-signal"),
+            value_env("KBS_RESOURCE_CACHE_SECONDS", "300"),
+            value_env("KBS_RESOURCE_FAILURE_CACHE_SECONDS", "30"),
+            value_env("KBS_FETCH_RETRIES", "120"),
+            value_env("KBS_FETCH_RETRY_SLEEP_SECONDS", "2"),
+            value_env("KBS_FETCH_MAX_SLEEP_SECONDS", "10"),
+            value_env("KBS_FETCH_REQUEST_TIMEOUT_SECONDS", "10"),
+        ],
+        "volumeMounts": [
+            mount("ownership-signal", "/run/ownership-signal", false),
+            mount("unlock-socket", "/run/enclava", false),
+        ],
+        "securityContext": security_context(65532, 65532, true, true, false, false, caps(&["ALL"], &[])),
+        "resources": resources("100m", "128Mi", "500m", "256Mi"),
+    })
+}
+
+fn enclava_tools_container() -> Result<Value> {
+    Ok(json!({
+        "name": "enclava-tools",
+        "image": enclava_init_image()?,
+        "command": ["/bin/sh", "-ec"],
+        "args": ["cp /usr/local/bin/enclava-wait-exec /enclava-tools/enclava-wait-exec && chmod 0555 /enclava-tools/enclava-wait-exec"],
+        "volumeMounts": [
+            mount("enclava-tools", "/enclava-tools", false),
+        ],
+        "securityContext": security_context(0, 0, false, true, false, false, caps(&["ALL"], &[])),
+        "resources": resources("10m", "16Mi", "50m", "32Mi"),
+    }))
+}
+
+fn tenant_ingress_container(descriptor: &DeploymentDescriptor) -> Value {
+    json!({
+        "name": "tenant-ingress",
+        "image": image_ref(CADDY_INGRESS_IMAGE_REPO, &descriptor.sidecars.caddy_digest),
+        "command": [ENCLAVA_WAIT_EXEC_PATH],
+        "args": ["caddy", "run", "--config", "/etc/caddy/Caddyfile"],
+        "ports": [
+            {"containerPort": 443, "name": "https"},
+        ],
+        "env": [
+            field_env("POD_NAME", "metadata.name"),
+            field_env("POD_NAMESPACE", "metadata.namespace"),
+            value_env("CADDY_SEED_PATH", "/state/caddy/seed"),
+            value_env("VOLUME_MOUNT_POINT", "/state/tls-state"),
+            value_env("XDG_DATA_HOME", "/state/tls-state/caddy"),
+            value_env("ENCLAVA_CONTAINER_NAME", "tenant-ingress"),
+            value_env("ENCLAVA_STARTED_DIR", "/run/enclava/containers"),
+            value_env("ENCLAVA_INIT_READY_FILE", "/run/enclava/init-ready"),
+        ],
+        "volumeMounts": [
+            mount("tenant-ingress-caddyfile", "/etc/caddy", true),
+            mount("enclava-tools", "/enclava-tools", true),
+            mount("unlock-socket", "/run/enclava", false),
+            mount_with_propagation("state-mount", "/state", "HostToContainer"),
+            mount_with_propagation("tls-state-mount", "/state/tls-state", "HostToContainer"),
+        ],
+        "securityContext": security_context(10002, 10002, true, true, false, false, caps(&["ALL"], &["NET_BIND_SERVICE"])),
+        "resources": resources("100m", "128Mi", "500m", "256Mi"),
+    })
+}
+
+fn enclava_init_container() -> Result<Value> {
+    Ok(json!({
+        "name": "enclava-init",
+        "image": enclava_init_image()?,
+        "command": ["/usr/local/bin/enclava-init"],
+        "env": [
+            value_env("ENCLAVA_INIT_CONFIG", "/etc/enclava-init/config.toml"),
+            value_env("ENCLAVA_INIT_STAY_ALIVE", "true"),
+            value_env("ENCLAVA_INIT_READY_FILE", "/run/enclava/init-ready"),
+            value_env("ENCLAVA_INIT_STARTED_DIR", "/run/enclava/containers"),
+            value_env("ENCLAVA_INIT_WAIT_FOR_CONTAINERS", "web,tenant-ingress"),
+        ],
+        "volumeMounts": [
+            mount_with_propagation("state-mount", "/state", "Bidirectional"),
+            mount_with_propagation("tls-state-mount", "/state/tls-state", "Bidirectional"),
+            mount("unlock-socket", "/run/enclava", false),
+            mount("enclava-init-config", "/etc/enclava-init", true),
+        ],
+        "volumeDevices": [
+            {"name": "state", "devicePath": "/dev/csi0"},
+            {"name": "tls-state", "devicePath": "/dev/csi1"},
+        ],
+        "securityContext": security_context(0, 0, false, true, true, true, caps(&["ALL"], &["SYS_ADMIN"])),
+        "resources": resources("50m", "64Mi", "250m", "128Mi"),
+    }))
+}
+
+fn cap_volumes(descriptor: &DeploymentDescriptor) -> Vec<Value> {
+    vec![
+        json!({"name": "logs", "emptyDir": {}}),
+        json!({"name": "ownership-signal", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}),
+        json!({"name": "tenant-ingress-caddyfile", "configMap": {"name": format!("{}-tenant-ingress", descriptor.app_name), "defaultMode": 0o444}}),
+        json!({"name": "startup", "configMap": {"name": format!("{}-startup", descriptor.app_name), "defaultMode": 0o555}}),
+        json!({"name": "unlock-socket", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}),
+        json!({"name": "enclava-tools", "emptyDir": {}}),
+        json!({"name": "state-mount", "emptyDir": {}}),
+        json!({"name": "tls-state-mount", "emptyDir": {}}),
+        json!({"name": "enclava-init-config", "configMap": {"name": format!("{}-enclava-init", descriptor.app_name), "defaultMode": 0o400}}),
+    ]
 }
 
 #[derive(Serialize)]
