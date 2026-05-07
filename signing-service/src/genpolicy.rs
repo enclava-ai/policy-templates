@@ -285,7 +285,7 @@ fn normalize_cap_generated_policy(policy_text: &str) -> String {
 fn normalize_cap_overlay_root_path(policy_text: &str) -> String {
     const DEFAULT_ROOT_PATH: &str = r#""root_path": "/run/kata-containers/$(bundle-id)/rootfs""#;
     const OVERLAY_ROOT_PATH: &str =
-        r#""root_path": "/run/kata-containers/(shared/containers/)?$(bundle-id)/rootfs""#;
+        r#""root_path": "/run/kata-containers/(?:shared/containers/)?$(bundle-id)/rootfs""#;
 
     policy_text.replace(DEFAULT_ROOT_PATH, OVERLAY_ROOT_PATH)
 }
@@ -1095,7 +1095,7 @@ allow_create_container_input if {
         let normalized = normalize_cap_generated_policy(policy);
 
         assert!(normalized.contains(
-            r#""root_path": "/run/kata-containers/(shared/containers/)?$(bundle-id)/rootfs""#
+            r#""root_path": "/run/kata-containers/(?:shared/containers/)?$(bundle-id)/rootfs""#
         ));
         assert!(!normalized.contains(r#""root_path": "/run/kata-containers/$(bundle-id)/rootfs""#));
     }
