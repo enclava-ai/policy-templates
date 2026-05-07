@@ -274,6 +274,7 @@ fn normalize_cap_generated_policy(policy_text: &str) -> String {
 
     let normalized = lines.concat();
     let normalized = normalize_rootfs_propagation(&normalized);
+    let normalized = normalize_cap_storage_mounts(&normalized);
     normalize_privileged_caps_placeholder(&normalized)
 }
 
@@ -311,6 +312,70 @@ allow_cap_rootfs_propagation(rootfs_propagation) if {
         patched
     } else {
         format!("{ROOTFS_HELPER}\n{with_allow}")
+    }
+}
+
+fn normalize_cap_storage_mounts(policy_text: &str) -> String {
+    const MOUNT_OPTIONS_CHECK: &str = "    p_mount.options == i_mount.options\n";
+    const MOUNT_OPTIONS_ALLOW: &str = "    allow_cap_mount_options(p_mount, i_mount)\n";
+    const STORAGE_FS_GROUP_CHECK: &str = "    p_storage.fs_group       == i_storage.fs_group\n";
+    const STORAGE_FS_GROUP_ALLOW: &str = "    allow_cap_storage_fs_group(p_storage, i_storage)\n";
+    const STORAGE_HELPERS: &str = r#"
+allow_cap_mount_options(p_mount, i_mount) if {
+    p_mount.options == i_mount.options
+}
+
+allow_cap_mount_options(p_mount, i_mount) if {
+    p_mount.type_ == "bind"
+    p_mount.source == ""
+    p_mount.options == ["rbind", "rprivate", "rw"]
+    i_mount.options == ["rbind", "rslave", "rw"]
+}
+
+allow_cap_mount_options(p_mount, i_mount) if {
+    p_mount.type_ == "bind"
+    p_mount.source == ""
+    p_mount.options == ["rbind", "rprivate", "rw"]
+    i_mount.options == ["rbind", "rshared", "rw"]
+}
+
+allow_cap_storage_fs_group(p_storage, i_storage) if {
+    p_storage.fs_group == i_storage.fs_group
+}
+
+allow_cap_storage_fs_group(p_storage, i_storage) if {
+    p_storage.fs_group == null
+    p_storage.options == ["fsgid=10001"]
+    i_storage.options == []
+    i_storage.fs_group.group_change_policy == 0
+    i_storage.fs_group.group_id == 10001
+}
+"#;
+
+    if policy_text.contains("allow_cap_mount_options")
+        || (!policy_text.contains(MOUNT_OPTIONS_CHECK)
+            && !policy_text.contains(STORAGE_FS_GROUP_CHECK))
+    {
+        return policy_text.to_string();
+    }
+
+    let normalized = policy_text
+        .replace(MOUNT_OPTIONS_CHECK, MOUNT_OPTIONS_ALLOW)
+        .replace(STORAGE_FS_GROUP_CHECK, STORAGE_FS_GROUP_ALLOW);
+    insert_policy_helper(&normalized, STORAGE_HELPERS)
+}
+
+fn insert_policy_helper(policy_text: &str, helper: &str) -> String {
+    let insert_after = "default AllowRequestsFailingPolicy := false\n";
+    if let Some(idx) = policy_text.find(insert_after) {
+        let insert_at = idx + insert_after.len();
+        let mut patched = String::with_capacity(policy_text.len() + helper.len());
+        patched.push_str(&policy_text[..insert_at]);
+        patched.push_str(helper);
+        patched.push_str(&policy_text[insert_at..]);
+        patched
+    } else {
+        format!("{helper}\n{policy_text}")
     }
 }
 
@@ -931,5 +996,39 @@ allow_create_container_input if {
 
         assert!(normalized.contains("\"$(privileged_caps)\""));
         assert!(!normalized.contains("CAP_$(privileged_caps)"));
+    }
+
+    #[test]
+    fn allows_cap_state_storage_runtime_mount_options_and_fs_group() {
+        let policy = r#"default AllowRequestsFailingPolicy := false
+
+check_mount(p_mount, i_mount, bundle_id, sandbox_id) if {
+    p_mount.destination == i_mount.destination
+    p_mount.type_ == i_mount.type_
+    p_mount.options == i_mount.options
+
+    mount_source_allows(p_mount, i_mount, bundle_id, sandbox_id)
+}
+
+allow_storage_base(p_storage, i_storage, bundle_id, sandbox_id) if {
+    p_storage.driver_options == i_storage.driver_options
+    p_storage.fs_group       == i_storage.fs_group
+    p_storage.fstype         == i_storage.fstype
+}
+"#;
+
+        let normalized = normalize_cap_generated_policy(policy);
+
+        assert!(normalized.contains("allow_cap_mount_options(p_mount, i_mount)"));
+        assert!(normalized.contains(r#"i_mount.options == ["rbind", "rslave", "rw"]"#));
+        assert!(normalized.contains(r#"i_mount.options == ["rbind", "rshared", "rw"]"#));
+        assert!(normalized.contains("allow_cap_storage_fs_group(p_storage, i_storage)"));
+        assert!(normalized.contains(r#"p_storage.options == ["fsgid=10001"]"#));
+        assert!(!normalized.contains(
+            "    p_mount.type_ == i_mount.type_\n    p_mount.options == i_mount.options\n\n    mount_source_allows"
+        ));
+        assert!(!normalized.contains(
+            "    p_storage.driver_options == i_storage.driver_options\n    p_storage.fs_group       == i_storage.fs_group\n"
+        ));
     }
 }
