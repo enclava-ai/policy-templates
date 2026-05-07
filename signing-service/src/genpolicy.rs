@@ -142,7 +142,7 @@ fn container_from_descriptor(descriptor: &DeploymentDescriptor) -> Container<'_>
     let oci = &descriptor.oci_runtime_spec;
     Container {
         name: &descriptor.app_name,
-        image: &descriptor.image_digest,
+        image: &descriptor.image_ref,
         command: &oci.command,
         args: &oci.args,
         env: oci.env.iter().map(Env::from).collect(),
@@ -383,7 +383,9 @@ mod tests {
         assert!(invocation
             .manifest_yaml
             .contains("serviceAccountName: cap-demo-sa"));
-        assert!(invocation.manifest_yaml.contains("image: sha256:aaaa"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("image: ghcr.io/enclava-ai/demo@sha256:aaaa"));
         assert!(invocation.manifest_yaml.contains("- name: A"));
         assert!(invocation.manifest_yaml.contains("value: '1'"));
     }

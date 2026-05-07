@@ -105,6 +105,7 @@ pub struct DeploymentDescriptor {
     #[serde(with = "hex_bytes32")]
     pub identity_hash: [u8; 32],
 
+    pub image_ref: String,
     pub image_digest: String,
     pub signer_identity: SignerIdentity,
     pub oci_runtime_spec: OciRuntimeSpec,
@@ -324,6 +325,7 @@ fn descriptor_records<'a>(
         ("namespace", descriptor.namespace.as_bytes()),
         ("service_account", descriptor.service_account.as_bytes()),
         ("identity_hash", descriptor.identity_hash.as_slice()),
+        ("image_ref", descriptor.image_ref.as_bytes()),
         ("image_digest", descriptor.image_digest.as_bytes()),
         ("signer_identity", sub.signer_hash.as_slice()),
         ("oci_runtime_spec", sub.oci_hash.as_slice()),
@@ -461,6 +463,7 @@ pub mod tests {
             namespace: "cap-abcd1234-demo".to_string(),
             service_account: "cap-demo-sa".to_string(),
             identity_hash: [9; 32],
+            image_ref: "ghcr.io/enclava-ai/demo@sha256:aaaa".to_string(),
             image_digest: "sha256:aaaa".to_string(),
             signer_identity: SignerIdentity {
                 subject: "https://github.com/x/y/.github/workflows/build.yml".to_string(),
@@ -508,8 +511,44 @@ pub mod tests {
     fn descriptor_core_hash_matches_cap_vector() {
         assert_eq!(
             hex::encode(descriptor_core_hash(&fixed_descriptor())),
-            "0e7077c69d104fdff46fa75d679684fd262c74d76a427f10dc3394f6b2b9e87e"
+            "4f102fb32b41269d5a22fd0454a3262c335c8b0a83fed9e45e1aac25a7d90b71"
         );
+    }
+
+    #[test]
+    fn descriptor_json_carries_image_ref_and_digest() {
+        let json = serde_json::to_string(&fixed_descriptor()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let object = value.as_object().unwrap();
+        let image_ref_position = json.find("\"image_ref\"").unwrap();
+        let image_digest_position = json.find("\"image_digest\"").unwrap();
+
+        assert_eq!(object["image_ref"], "ghcr.io/enclava-ai/demo@sha256:aaaa");
+        assert_eq!(object["image_digest"], "sha256:aaaa");
+        assert!(
+            image_ref_position < image_digest_position,
+            "image_ref must serialize before image_digest"
+        );
+    }
+
+    #[test]
+    fn canonical_descriptor_includes_image_ref() {
+        let mut a = fixed_descriptor();
+        let mut b = a.clone();
+        b.image_ref = "registry.example.com/other/demo@sha256:aaaa".to_string();
+
+        assert_ne!(
+            descriptor_canonical_bytes(&a),
+            descriptor_canonical_bytes(&b)
+        );
+        assert_ne!(descriptor_core_hash(&a), descriptor_core_hash(&b));
+
+        a.image_ref = b.image_ref.clone();
+        assert_eq!(
+            descriptor_canonical_bytes(&a),
+            descriptor_canonical_bytes(&b)
+        );
+        assert_eq!(descriptor_core_hash(&a), descriptor_core_hash(&b));
     }
 
     #[test]
