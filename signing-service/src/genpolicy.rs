@@ -262,7 +262,6 @@ fn caps(drop: &[&str], add: &[&str]) -> Value {
 fn security_context(
     run_as_user: u32,
     run_as_group: u32,
-    run_as_non_root: bool,
     read_only_root_fs: bool,
     allow_privilege_escalation: bool,
     privileged: bool,
@@ -271,7 +270,6 @@ fn security_context(
     json!({
         "runAsUser": run_as_user,
         "runAsGroup": run_as_group,
-        "runAsNonRoot": run_as_non_root,
         "readOnlyRootFilesystem": read_only_root_fs,
         "allowPrivilegeEscalation": allow_privilege_escalation,
         "privileged": privileged,
@@ -331,7 +329,7 @@ fn app_container(descriptor: &DeploymentDescriptor) -> Value {
             "protocol": port.protocol,
         })).collect::<Vec<_>>(),
         "volumeMounts": volume_mounts,
-        "securityContext": security_context(10001, 10001, true, true, false, false, caps(&["ALL"], &[])),
+        "securityContext": security_context(10001, 10001, true, false, false, caps(&["ALL"], &[])),
         "resources": ResourcesYaml::from(&oci.resources),
     })
 }
@@ -371,7 +369,7 @@ fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Value {
             mount("ownership-signal", "/run/ownership-signal", false),
             mount("unlock-socket", "/run/enclava", false),
         ],
-        "securityContext": security_context(65532, 65532, true, true, false, false, caps(&["ALL"], &[])),
+        "securityContext": security_context(65532, 65532, true, false, false, caps(&["ALL"], &[])),
         "resources": resources("100m", "128Mi", "500m", "256Mi"),
     })
 }
@@ -385,7 +383,7 @@ fn enclava_tools_container() -> Result<Value> {
         "volumeMounts": [
             mount("enclava-tools", "/enclava-tools", false),
         ],
-        "securityContext": security_context(0, 0, false, true, false, false, caps(&["ALL"], &[])),
+        "securityContext": security_context(0, 0, true, false, false, caps(&["ALL"], &[])),
         "resources": resources("10m", "16Mi", "50m", "32Mi"),
     }))
 }
@@ -416,7 +414,7 @@ fn tenant_ingress_container(descriptor: &DeploymentDescriptor) -> Value {
             mount_with_propagation("state-mount", "/state", "HostToContainer"),
             mount_with_propagation("tls-state-mount", "/state/tls-state", "HostToContainer"),
         ],
-        "securityContext": security_context(10002, 10002, true, true, false, false, caps(&["ALL"], &["NET_BIND_SERVICE"])),
+        "securityContext": security_context(10002, 10002, true, false, false, caps(&["ALL"], &["NET_BIND_SERVICE"])),
         "resources": resources("100m", "128Mi", "500m", "256Mi"),
     })
 }
@@ -443,7 +441,7 @@ fn enclava_init_container() -> Result<Value> {
             {"name": "state", "devicePath": "/dev/csi0"},
             {"name": "tls-state", "devicePath": "/dev/csi1"},
         ],
-        "securityContext": security_context(0, 0, false, true, true, true, caps(&["ALL"], &["SYS_ADMIN"])),
+        "securityContext": security_context(0, 0, true, true, true, caps(&["ALL"], &["SYS_ADMIN"])),
         "resources": resources("50m", "64Mi", "250m", "128Mi"),
     }))
 }
