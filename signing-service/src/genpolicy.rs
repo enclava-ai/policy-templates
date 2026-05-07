@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -7,6 +8,11 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::descriptor::{DeploymentDescriptor, EnvVar, Mount, OciRuntimeSpec, Port, Resources};
+
+const KATA_RUNTIME_HANDLER_ANNOTATION: &str = "io.containerd.cri.runtime-handler";
+const KATA_KERNEL_PARAMS_ANNOTATION: &str = "io.katacontainers.config.hypervisor.kernel_params";
+const KATA_RUNTIME_HANDLER: &str = "kata-qemu-snp";
+const KBS_URL: &str = "http://kbs-service.trustee-operator-system.svc.cluster.local:8080";
 
 #[derive(Debug, Clone)]
 pub struct GenpolicyConfig {
@@ -127,6 +133,7 @@ fn render_pod_manifest(descriptor: &DeploymentDescriptor) -> Result<String> {
         metadata: Metadata {
             name: &descriptor.app_name,
             namespace: &descriptor.namespace,
+            annotations: cap_runtime_annotations(),
         },
         spec: PodSpec {
             runtime_class_name: &descriptor.expected_runtime_class,
@@ -136,6 +143,19 @@ fn render_pod_manifest(descriptor: &DeploymentDescriptor) -> Result<String> {
         },
     };
     serde_yaml::to_string(&pod).context("rendering genpolicy pod manifest")
+}
+
+fn cap_runtime_annotations() -> BTreeMap<&'static str, String> {
+    BTreeMap::from([
+        (
+            KATA_RUNTIME_HANDLER_ANNOTATION,
+            KATA_RUNTIME_HANDLER.to_string(),
+        ),
+        (
+            KATA_KERNEL_PARAMS_ANNOTATION,
+            format!("agent.aa_kbc_params=cc_kbc::{KBS_URL} agent.guest_components_rest_api=all"),
+        ),
+    ])
 }
 
 fn container_from_descriptor(descriptor: &DeploymentDescriptor) -> Container<'_> {
@@ -185,6 +205,7 @@ struct PodManifest<'a> {
 struct Metadata<'a> {
     name: &'a str,
     namespace: &'a str,
+    annotations: BTreeMap<&'a str, String>,
 }
 
 #[derive(Serialize)]
@@ -380,6 +401,12 @@ mod tests {
         assert!(invocation
             .manifest_yaml
             .contains("runtimeClassName: kata-qemu-snp"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("io.containerd.cri.runtime-handler: kata-qemu-snp"));
+        assert!(invocation.manifest_yaml.contains(
+            "io.katacontainers.config.hypervisor.kernel_params: agent.aa_kbc_params=cc_kbc::http://kbs-service.trustee-operator-system.svc.cluster.local:8080 agent.guest_components_rest_api=all"
+        ));
         assert!(invocation
             .manifest_yaml
             .contains("serviceAccountName: cap-demo-sa"));
