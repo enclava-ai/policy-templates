@@ -272,7 +272,41 @@ fn normalize_cap_generated_policy(policy_text: &str) -> String {
         idx = user_end + 1;
     }
 
-    lines.concat()
+    let normalized = lines.concat();
+    normalize_rootfs_propagation(&normalized)
+}
+
+fn normalize_rootfs_propagation(policy_text: &str) -> String {
+    const ROOTFS_PRECHECK: &str = "    count(i_linux.RootfsPropagation) == 0\n";
+    const ROOTFS_ALLOW: &str = "    allow_cap_rootfs_propagation(i_linux.RootfsPropagation)\n";
+    const ROOTFS_HELPER: &str = r#"
+allow_cap_rootfs_propagation(rootfs_propagation) if {
+    count(rootfs_propagation) == 0
+}
+
+allow_cap_rootfs_propagation(rootfs_propagation) if {
+    rootfs_propagation == "rshared"
+}
+"#;
+
+    if !policy_text.contains(ROOTFS_PRECHECK)
+        || policy_text.contains("allow_cap_rootfs_propagation")
+    {
+        return policy_text.to_string();
+    }
+
+    let with_allow = policy_text.replace(ROOTFS_PRECHECK, ROOTFS_ALLOW);
+    let insert_after = "default AllowRequestsFailingPolicy := false\n";
+    if let Some(idx) = with_allow.find(insert_after) {
+        let insert_at = idx + insert_after.len();
+        let mut patched = String::with_capacity(with_allow.len() + ROOTFS_HELPER.len());
+        patched.push_str(&with_allow[..insert_at]);
+        patched.push_str(ROOTFS_HELPER);
+        patched.push_str(&with_allow[insert_at..]);
+        patched
+    } else {
+        format!("{ROOTFS_HELPER}\n{with_allow}")
+    }
 }
 
 fn normalized_additional_gids(group_lines: &[String]) -> Vec<String> {
@@ -839,5 +873,21 @@ mod tests {
               10001
             ]"#
         ));
+    }
+
+    #[test]
+    fn allows_kata_rshared_rootfs_propagation() {
+        let policy = r#"default AllowRequestsFailingPolicy := false
+
+allow_create_container_input if {
+    count(i_linux.RootfsPropagation) == 0
+}
+"#;
+
+        let normalized = normalize_cap_generated_policy(policy);
+
+        assert!(normalized.contains("allow_cap_rootfs_propagation(i_linux.RootfsPropagation)"));
+        assert!(normalized.contains("rootfs_propagation == \"rshared\""));
+        assert!(!normalized.contains("count(i_linux.RootfsPropagation) == 0"));
     }
 }
