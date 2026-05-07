@@ -276,6 +276,7 @@ fn normalize_cap_generated_policy(policy_text: &str) -> String {
     let normalized = normalize_rootfs_propagation(&normalized);
     let normalized = normalize_cap_storage_mounts(&normalized);
     let normalized = normalize_cap_sandbox_storages(&normalized);
+    let normalized = normalize_cap_extra_storages(&normalized);
     normalize_privileged_caps_placeholder(&normalized)
 }
 
@@ -413,6 +414,42 @@ allow_cap_sandbox_storage(_p_storage, i_storage) if {
 
     let normalized = policy_text.replace(SANDBOX_STORAGE_CHECK, SANDBOX_STORAGE_ALLOW);
     insert_policy_helper(&normalized, SANDBOX_STORAGE_HELPERS)
+}
+
+fn normalize_cap_extra_storages(policy_text: &str) -> String {
+    const STORAGE_COUNT_CHECK: &str = "    p_count == i_count - img_pull_count\n";
+    const STORAGE_COUNT_ALLOW: &str = r#"    cap_extra_storage_count := count([s | s := i_storages[_]; allow_cap_extra_storage(s, bundle_id, sandbox_id)])
+    print("allow_storages: cap_extra_storage_count =", cap_extra_storage_count)
+    p_count == i_count - img_pull_count - cap_extra_storage_count
+"#;
+    const EXTRA_STORAGE_HELPERS: &str = r#"
+allow_storage(_p_storages, i_storage, bundle_id, sandbox_id) if {
+    allow_cap_extra_storage(i_storage, bundle_id, sandbox_id)
+}
+
+allow_cap_extra_storage(i_storage, bundle_id, _sandbox_id) if {
+    i_storage.driver == "watchable-bind"
+    i_storage.driver_options == []
+    i_storage.fs_group == null
+    i_storage.fstype == "bind"
+    i_storage.options == ["rbind", "rprivate", "ro"]
+    i_storage.shared == false
+
+    watchable_prefix := concat("", ["/run/kata-containers/shared/containers/watchable/", bundle_id, "-"])
+    source_prefix := concat("", ["/run/kata-containers/shared/containers/", bundle_id, "-"])
+    startswith(i_storage.mount_point, watchable_prefix)
+    startswith(i_storage.source, source_prefix)
+    replace(i_storage.mount_point, "/watchable/", "/") == i_storage.source
+}
+"#;
+
+    if policy_text.contains("allow_cap_extra_storage") || !policy_text.contains(STORAGE_COUNT_CHECK)
+    {
+        return policy_text.to_string();
+    }
+
+    let normalized = policy_text.replace(STORAGE_COUNT_CHECK, STORAGE_COUNT_ALLOW);
+    insert_policy_helper(&normalized, EXTRA_STORAGE_HELPERS)
 }
 
 fn insert_policy_helper(policy_text: &str, helper: &str) -> String {
@@ -1072,6 +1109,17 @@ allow_sandbox_storage(p_storages, i_storage) if {
     some p_storage in p_storages
     i_storage == p_storage
 }
+
+allow_storages(p_storages, i_storages, bundle_id, sandbox_id) if {
+    p_count := count(p_storages)
+    i_count := count(i_storages)
+    img_pull_count := count([s | s := i_storages[_]; s.driver == "image_guest_pull"])
+    p_count == i_count - img_pull_count
+
+    every i_storage in i_storages {
+        allow_storage(p_storages, i_storage, bundle_id, sandbox_id)
+    }
+}
 "#;
 
         let normalized = normalize_cap_generated_policy(policy);
@@ -1086,6 +1134,14 @@ allow_sandbox_storage(p_storages, i_storage) if {
         assert!(normalized.contains("i_storage.fs_group.group_id == 10001"));
         assert!(normalized.contains(r#"i_storage.driver == "9p""#));
         assert!(normalized.contains(r#"i_storage.source == "kataShared""#));
+        assert!(normalized.contains("allow_cap_extra_storage(i_storage, bundle_id, sandbox_id)"));
+        assert!(normalized.contains("cap_extra_storage_count := count"));
+        assert!(
+            normalized.contains("p_count == i_count - img_pull_count - cap_extra_storage_count")
+        );
+        assert!(normalized.contains(r#"i_storage.driver == "watchable-bind""#));
+        assert!(normalized
+            .contains(r#"replace(i_storage.mount_point, "/watchable/", "/") == i_storage.source"#));
         assert!(!normalized.contains(
             "    p_mount.type_ == i_mount.type_\n    p_mount.options == i_mount.options\n\n    mount_source_allows"
         ));
