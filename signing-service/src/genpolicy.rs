@@ -641,7 +641,7 @@ fn enclava_init_container() -> Result<Value> {
             {"name": "state", "devicePath": "/dev/csi0"},
             {"name": "tls-state", "devicePath": "/dev/csi1"},
         ],
-        "securityContext": security_context(0, 0, true, true, true, caps(&["ALL"], &["SYS_ADMIN"])),
+        "securityContext": security_context(0, 0, true, true, true, caps(&["ALL"], &["$(privileged_caps)"])),
         "resources": resources("50m", "64Mi", "250m", "128Mi"),
     }))
 }
@@ -771,6 +771,7 @@ mod tests {
         assert!(invocation
             .manifest_yaml
             .contains("- /usr/local/bin/enclava-wait-exec"));
+        assert!(invocation.manifest_yaml.contains("$(privileged_caps)"));
         assert!(invocation.manifest_yaml.contains("- name: A"));
         assert!(invocation.manifest_yaml.contains("value: '1'"));
     }
