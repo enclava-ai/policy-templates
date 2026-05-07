@@ -147,7 +147,6 @@ fn render_pod_manifest(descriptor: &DeploymentDescriptor) -> Result<String> {
             "runtimeClassName": descriptor.expected_runtime_class,
             "securityContext": {
                 "fsGroup": 10001,
-                "fsGroupChangePolicy": "OnRootMismatch",
                 "supplementalGroups": [6],
             },
             "initContainers": [
