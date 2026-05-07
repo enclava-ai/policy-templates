@@ -406,6 +406,7 @@ fn render_pod_manifest(descriptor: &DeploymentDescriptor) -> Result<String> {
         },
         "spec": {
             "runtimeClassName": descriptor.expected_runtime_class,
+            "enableServiceLinks": false,
             "securityContext": {
                 "fsGroup": 10001,
                 "supplementalGroups": [6],
@@ -474,29 +475,6 @@ fn field_env(name: &str, field_path: &str) -> Value {
             },
         },
     })
-}
-
-fn kubernetes_service_host() -> String {
-    std::env::var("GENPOLICY_KUBERNETES_SERVICE_HOST").unwrap_or_else(|_| "10.43.0.1".to_string())
-}
-
-fn kubernetes_service_env() -> Vec<Value> {
-    let host = kubernetes_service_host();
-    vec![
-        value_env("KUBERNETES_SERVICE_PORT", "443"),
-        value_env("KUBERNETES_SERVICE_PORT_HTTPS", "443"),
-        value_env("KUBERNETES_PORT", format!("tcp://{host}:443")),
-        value_env("KUBERNETES_PORT_443_TCP", format!("tcp://{host}:443")),
-        value_env("KUBERNETES_PORT_443_TCP_PROTO", "tcp"),
-        value_env("KUBERNETES_PORT_443_TCP_PORT", "443"),
-        value_env("KUBERNETES_PORT_443_TCP_ADDR", host.clone()),
-        value_env("KUBERNETES_SERVICE_HOST", host),
-    ]
-}
-
-fn with_kubernetes_service_env(mut env: Vec<Value>) -> Vec<Value> {
-    env.extend(kubernetes_service_env());
-    env
 }
 
 fn mount(name: &str, mount_path: &str, read_only: bool) -> Value {
@@ -601,12 +579,11 @@ fn app_container(descriptor: &DeploymentDescriptor) -> Value {
         ));
     }
 
-    let env = with_kubernetes_service_env(
-        oci.env
-            .iter()
-            .map(|env| value_env(&env.name, &env.value))
-            .collect(),
-    );
+    let env = oci
+        .env
+        .iter()
+        .map(|env| value_env(&env.name, &env.value))
+        .collect::<Vec<_>>();
 
     json!({
         "name": "web",
@@ -633,7 +610,7 @@ fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Value {
             {"containerPort": 8081, "name": "attest-http"},
             {"containerPort": 8443, "name": "attestation"},
         ],
-        "env": with_kubernetes_service_env(vec![
+        "env": [
             value_env("ATTESTATION_WORKLOAD_CONTAINER", "web"),
             field_env("ATTESTATION_POD_NAME", "metadata.name"),
             field_env("ATTESTATION_POD_NAMESPACE", "metadata.namespace"),
@@ -653,7 +630,7 @@ fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Value {
             value_env("KBS_FETCH_RETRY_SLEEP_SECONDS", "2"),
             value_env("KBS_FETCH_MAX_SLEEP_SECONDS", "10"),
             value_env("KBS_FETCH_REQUEST_TIMEOUT_SECONDS", "10"),
-        ]),
+        ],
         "volumeMounts": [
             mount("ownership-signal", "/run/ownership-signal", false),
             mount("unlock-socket", "/run/enclava", false),
@@ -672,7 +649,7 @@ fn tenant_ingress_container(descriptor: &DeploymentDescriptor) -> Value {
         "ports": [
             {"containerPort": 443, "name": "https"},
         ],
-        "env": with_kubernetes_service_env(vec![
+        "env": [
             field_env("POD_NAME", "metadata.name"),
             field_env("POD_NAMESPACE", "metadata.namespace"),
             value_env("CADDY_SEED_PATH", "/state/caddy/seed"),
@@ -681,7 +658,7 @@ fn tenant_ingress_container(descriptor: &DeploymentDescriptor) -> Value {
             value_env("ENCLAVA_CONTAINER_NAME", "tenant-ingress"),
             value_env("ENCLAVA_STARTED_DIR", "/run/enclava/containers"),
             value_env("ENCLAVA_INIT_READY_FILE", "/run/enclava/init-ready"),
-        ]),
+        ],
         "volumeMounts": [
             mount("tenant-ingress-caddyfile", "/etc/caddy", true),
             mount("unlock-socket", "/run/enclava", false),
@@ -698,13 +675,13 @@ fn enclava_init_container() -> Result<Value> {
         "name": "enclava-init",
         "image": enclava_init_image()?,
         "command": ["/usr/local/bin/enclava-init"],
-        "env": with_kubernetes_service_env(vec![
+        "env": [
             value_env("ENCLAVA_INIT_CONFIG", "/etc/enclava-init/config.toml"),
             value_env("ENCLAVA_INIT_STAY_ALIVE", "true"),
             value_env("ENCLAVA_INIT_READY_FILE", "/run/enclava/init-ready"),
             value_env("ENCLAVA_INIT_STARTED_DIR", "/run/enclava/containers"),
             value_env("ENCLAVA_INIT_WAIT_FOR_CONTAINERS", "web,tenant-ingress"),
-        ]),
+        ],
         "volumeMounts": [
             mount_with_propagation("state-mount", "/state", "Bidirectional"),
             mount_with_propagation("tls-state-mount", "/state/tls-state", "Bidirectional"),
@@ -831,14 +808,13 @@ mod tests {
         assert!(!invocation
             .manifest_yaml
             .contains("automountServiceAccountToken"));
-        assert!(!invocation.manifest_yaml.contains("enableServiceLinks"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("enableServiceLinks: false"));
         assert!(invocation.manifest_yaml.contains("fsGroup: 10001"));
         assert!(invocation.manifest_yaml.contains("supplementalGroups:"));
         assert!(!invocation.manifest_yaml.contains("defaultMode"));
-        assert!(invocation
-            .manifest_yaml
-            .contains("name: KUBERNETES_SERVICE_HOST"));
-        assert!(invocation.manifest_yaml.contains("value: 10.43.0.1"));
+        assert!(!invocation.manifest_yaml.contains("KUBERNETES_SERVICE_HOST"));
         assert!(invocation
             .manifest_yaml
             .contains("image: ghcr.io/enclava-ai/demo@sha256:aaaa"));
