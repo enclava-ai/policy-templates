@@ -320,6 +320,8 @@ fn normalize_cap_storage_mounts(policy_text: &str) -> String {
     const MOUNT_OPTIONS_ALLOW: &str = "    allow_cap_mount_options(p_mount, i_mount)\n";
     const STORAGE_FS_GROUP_CHECK: &str = "    p_storage.fs_group       == i_storage.fs_group\n";
     const STORAGE_FS_GROUP_ALLOW: &str = "    allow_cap_storage_fs_group(p_storage, i_storage)\n";
+    const STORAGE_OPTIONS_CHECK: &str = "    p_storage.options == i_storage.options\n";
+    const STORAGE_OPTIONS_ALLOW: &str = "    allow_cap_storage_options(p_storage, i_storage)\n";
     const STORAGE_HELPERS: &str = r#"
 allow_cap_mount_options(p_mount, i_mount) if {
     p_mount.options == i_mount.options
@@ -350,18 +352,32 @@ allow_cap_storage_fs_group(p_storage, i_storage) if {
     i_storage.fs_group.group_change_policy == 0
     i_storage.fs_group.group_id == 10001
 }
+
+allow_cap_storage_options(p_storage, i_storage) if {
+    p_storage.options == i_storage.options
+}
+
+allow_cap_storage_options(p_storage, i_storage) if {
+    p_storage.fs_group == null
+    p_storage.options == ["fsgid=10001"]
+    i_storage.options == []
+    i_storage.fs_group.group_change_policy == 0
+    i_storage.fs_group.group_id == 10001
+}
 "#;
 
     if policy_text.contains("allow_cap_mount_options")
         || (!policy_text.contains(MOUNT_OPTIONS_CHECK)
-            && !policy_text.contains(STORAGE_FS_GROUP_CHECK))
+            && !policy_text.contains(STORAGE_FS_GROUP_CHECK)
+            && !policy_text.contains(STORAGE_OPTIONS_CHECK))
     {
         return policy_text.to_string();
     }
 
     let normalized = policy_text
         .replace(MOUNT_OPTIONS_CHECK, MOUNT_OPTIONS_ALLOW)
-        .replace(STORAGE_FS_GROUP_CHECK, STORAGE_FS_GROUP_ALLOW);
+        .replace(STORAGE_FS_GROUP_CHECK, STORAGE_FS_GROUP_ALLOW)
+        .replace(STORAGE_OPTIONS_CHECK, STORAGE_OPTIONS_ALLOW);
     insert_policy_helper(&normalized, STORAGE_HELPERS)
 }
 
@@ -1017,6 +1033,11 @@ allow_storage_base(p_storage, i_storage, bundle_id, sandbox_id) if {
     p_storage.fs_group       == i_storage.fs_group
     p_storage.fstype         == i_storage.fstype
 }
+
+allow_storage_options(p_storage, i_storage) if {
+    p_storage.driver != "overlayfs"
+    p_storage.options == i_storage.options
+}
 "#;
 
         let normalized = normalize_cap_generated_policy(policy);
@@ -1025,7 +1046,9 @@ allow_storage_base(p_storage, i_storage, bundle_id, sandbox_id) if {
         assert!(normalized.contains(r#"i_mount.options == ["rbind", "rslave", "rw"]"#));
         assert!(normalized.contains(r#"i_mount.options == ["rbind", "rshared", "rw"]"#));
         assert!(normalized.contains("allow_cap_storage_fs_group(p_storage, i_storage)"));
+        assert!(normalized.contains("allow_cap_storage_options(p_storage, i_storage)"));
         assert!(normalized.contains(r#"p_storage.options == ["fsgid=10001"]"#));
+        assert!(normalized.contains("i_storage.fs_group.group_id == 10001"));
         assert!(!normalized.contains(
             "    p_mount.type_ == i_mount.type_\n    p_mount.options == i_mount.options\n\n    mount_source_allows"
         ));
