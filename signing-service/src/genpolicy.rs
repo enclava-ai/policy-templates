@@ -11,6 +11,9 @@ use crate::descriptor::{DeploymentDescriptor, EnvVar, Mount, OciRuntimeSpec, Por
 
 const KATA_RUNTIME_HANDLER_ANNOTATION: &str = "io.containerd.cri.runtime-handler";
 const KATA_KERNEL_PARAMS_ANNOTATION: &str = "io.katacontainers.config.hypervisor.kernel_params";
+const KATA_HYPERVISOR_CC_INIT_DATA_ANNOTATION: &str =
+    "io.katacontainers.config.hypervisor.cc_init_data";
+const KATA_RUNTIME_CC_INIT_DATA_ANNOTATION: &str = "io.katacontainers.config.runtime.cc_init_data";
 const KATA_RUNTIME_HANDLER: &str = "kata-qemu-snp";
 const KBS_URL: &str = "http://kbs-service.trustee-operator-system.svc.cluster.local:8080";
 
@@ -154,6 +157,14 @@ fn cap_runtime_annotations() -> BTreeMap<&'static str, String> {
         (
             KATA_KERNEL_PARAMS_ANNOTATION,
             format!("agent.aa_kbc_params=cc_kbc::{KBS_URL} agent.guest_components_rest_api=all"),
+        ),
+        (
+            KATA_HYPERVISOR_CC_INIT_DATA_ANNOTATION,
+            "enclava-dynamic-cc-init-data".to_string(),
+        ),
+        (
+            KATA_RUNTIME_CC_INIT_DATA_ANNOTATION,
+            "enclava-dynamic-cc-init-data".to_string(),
         ),
     ])
 }
@@ -406,6 +417,12 @@ mod tests {
             .contains("io.containerd.cri.runtime-handler: kata-qemu-snp"));
         assert!(invocation.manifest_yaml.contains(
             "io.katacontainers.config.hypervisor.kernel_params: agent.aa_kbc_params=cc_kbc::http://kbs-service.trustee-operator-system.svc.cluster.local:8080 agent.guest_components_rest_api=all"
+        ));
+        assert!(invocation.manifest_yaml.contains(
+            "io.katacontainers.config.hypervisor.cc_init_data: enclava-dynamic-cc-init-data"
+        ));
+        assert!(invocation.manifest_yaml.contains(
+            "io.katacontainers.config.runtime.cc_init_data: enclava-dynamic-cc-init-data"
         ));
         assert!(invocation
             .manifest_yaml
