@@ -21,6 +21,15 @@ const KBS_URL: &str = "http://kbs-service.trustee-operator-system.svc.cluster.lo
 const ATTESTATION_PROXY_IMAGE_REPO: &str = "ghcr.io/enclava-ai/attestation-proxy";
 const CADDY_INGRESS_IMAGE_REPO: &str = "ghcr.io/enclava-ai/caddy-ingress";
 const ENCLAVA_WAIT_EXEC_PATH: &str = "/usr/local/bin/enclava-wait-exec";
+const CADDY_ACME_TLS_PORT: u16 = 443;
+const CADDY_INTERNAL_TLS_PORT: u16 = 10443;
+const CADDY_INTERNAL_RUNTIME_PATH: &str = "/tmp/caddy";
+
+fn tenant_caddy_internal_tls_enabled() -> bool {
+    std::env::var("TENANT_CADDY_TLS_MODE")
+        .map(|value| value.eq_ignore_ascii_case("internal"))
+        .unwrap_or(false)
+}
 
 #[derive(Debug, Clone)]
 pub struct GenpolicyConfig {
@@ -773,22 +782,50 @@ fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Result<Valu
 }
 
 fn tenant_ingress_container(descriptor: &DeploymentDescriptor) -> Value {
+    tenant_ingress_container_for_mode(descriptor, tenant_caddy_internal_tls_enabled())
+}
+
+fn tenant_ingress_container_for_mode(
+    descriptor: &DeploymentDescriptor,
+    internal_tls: bool,
+) -> Value {
+    let tls_port = if internal_tls {
+        CADDY_INTERNAL_TLS_PORT
+    } else {
+        CADDY_ACME_TLS_PORT
+    };
+    let (volume_mount_point, xdg_data_home, xdg_config_home, home) = if internal_tls {
+        (
+            CADDY_INTERNAL_RUNTIME_PATH.to_string(),
+            CADDY_INTERNAL_RUNTIME_PATH.to_string(),
+            format!("{CADDY_INTERNAL_RUNTIME_PATH}/config"),
+            CADDY_INTERNAL_RUNTIME_PATH.to_string(),
+        )
+    } else {
+        (
+            "/state/tls-state/tenant-ingress".to_string(),
+            "/state/tls-state/tenant-ingress/caddy".to_string(),
+            "/state/tls-state/tenant-ingress/caddy/config".to_string(),
+            "/state/tls-state/tenant-ingress".to_string(),
+        )
+    };
+
     json!({
         "name": "tenant-ingress",
         "image": image_ref(CADDY_INGRESS_IMAGE_REPO, &descriptor.sidecars.caddy_digest),
         "command": [ENCLAVA_WAIT_EXEC_PATH],
         "args": ["caddy", "run", "--config", "/etc/caddy/Caddyfile"],
         "ports": [
-            {"containerPort": 443, "name": "https"},
+            {"containerPort": tls_port, "name": "https"},
         ],
         "env": with_kubernetes_service_env(vec![
             field_env("POD_NAME", "metadata.name"),
             field_env("POD_NAMESPACE", "metadata.namespace"),
             value_env("CADDY_SEED_PATH", "/run/enclava/seeds/caddy/seed"),
-            value_env("VOLUME_MOUNT_POINT", "/state/tls-state/tenant-ingress"),
-            value_env("XDG_DATA_HOME", "/state/tls-state/tenant-ingress/caddy"),
-            value_env("XDG_CONFIG_HOME", "/state/tls-state/tenant-ingress/caddy/config"),
-            value_env("HOME", "/state/tls-state/tenant-ingress"),
+            value_env("VOLUME_MOUNT_POINT", volume_mount_point),
+            value_env("XDG_DATA_HOME", xdg_data_home),
+            value_env("XDG_CONFIG_HOME", xdg_config_home),
+            value_env("HOME", home),
             value_env("ENCLAVA_CONTAINER_NAME", "tenant-ingress"),
             value_env("ENCLAVA_STARTED_DIR", "/run/enclava/containers"),
             value_env("ENCLAVA_INIT_READY_FILE", "/run/enclava/init-ready"),
@@ -995,8 +1032,21 @@ mod tests {
         assert!(invocation
             .manifest_yaml
             .contains("value: /state/tls-state/tenant-ingress/caddy/config"));
+        assert!(invocation.manifest_yaml.contains("containerPort: 443"));
         assert!(invocation.manifest_yaml.contains("- name: A"));
         assert!(invocation.manifest_yaml.contains("value: '1'"));
+    }
+
+    #[test]
+    fn tenant_ingress_internal_tls_manifest_uses_high_port_and_tmp_runtime() {
+        let container = tenant_ingress_container_for_mode(&fixed_descriptor(), true);
+        let yaml = serde_yaml::to_string(&container).unwrap();
+        assert!(yaml.contains("containerPort: 10443"));
+        assert!(yaml.contains("name: XDG_DATA_HOME"));
+        assert!(yaml.contains("value: /tmp/caddy"));
+        assert!(yaml.contains("name: XDG_CONFIG_HOME"));
+        assert!(yaml.contains("value: /tmp/caddy/config"));
+        assert!(yaml.contains("name: HOME"));
     }
 
     #[test]
