@@ -809,7 +809,6 @@ fn tenant_ingress_container(descriptor: &DeploymentDescriptor) -> Value {
             mount("tenant-ingress-caddyfile", "/etc/caddy", true),
             mount("unlock-socket", "/run/enclava", false),
             mount("state-mount", "/state", false),
-            mount("tls-state-mount", "/state/tls-state", false),
         ],
         "securityContext": security_context(10002, 10002, true, false, false, caps(&["ALL"], &["NET_BIND_SERVICE"])),
         "resources": resources("100m", "128Mi", "500m", "256Mi"),
