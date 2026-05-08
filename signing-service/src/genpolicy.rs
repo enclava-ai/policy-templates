@@ -710,7 +710,11 @@ fn app_container(descriptor: &DeploymentDescriptor) -> Value {
     for storage_path in oci
         .mounts
         .iter()
-        .filter(|mount| mount.source == "state-mount")
+        .filter(|mount| {
+            mount.source == "state-mount"
+                || mount.source.starts_with("state-mount:")
+                || mount.mount_type == "kubernetes-volume-subpath"
+        })
         .map(|mount| mount.destination.as_str())
         .filter(|path| *path != "/state")
     {
@@ -915,7 +919,7 @@ fn _assert_manifest_path(_: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::tests::fixed_descriptor;
+    use crate::descriptor::{tests::fixed_descriptor, Mount};
 
     #[test]
     fn invocation_pins_binary_settings_and_manifest_input() {
@@ -1003,6 +1007,30 @@ mod tests {
             .contains("value: /tmp/enclava-tls-state/caddy/config"));
         assert!(invocation.manifest_yaml.contains("- name: A"));
         assert!(invocation.manifest_yaml.contains("value: '1'"));
+    }
+
+    #[test]
+    fn descriptor_subpath_mounts_render_into_app_container_manifest() {
+        let mut descriptor = fixed_descriptor();
+        descriptor.oci_runtime_spec.mounts = vec![
+            Mount {
+                source: "state-mount".to_string(),
+                destination: "/state".to_string(),
+                mount_type: "kubernetes-volume".to_string(),
+                options: vec!["rw".to_string()],
+            },
+            Mount {
+                source: "state-mount:data".to_string(),
+                destination: "/data".to_string(),
+                mount_type: "kubernetes-volume-subpath".to_string(),
+                options: vec!["rw".to_string()],
+            },
+        ];
+
+        let manifest = render_pod_manifest(&descriptor).unwrap();
+
+        assert!(manifest.contains("mountPath: /data"));
+        assert!(manifest.contains("subPath: data"));
     }
 
     #[test]
