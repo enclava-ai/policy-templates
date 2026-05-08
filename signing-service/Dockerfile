@@ -35,7 +35,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/workspace/signing-service/target \
     cargo build --release --locked && \
-    cp target/release/enclava-policy-signing-service /usr/local/bin/enclava-policy-signing-service
+    cp target/release/enclava-policy-signing-service /usr/local/bin/enclava-policy-signing-service && \
+    cp target/release/policy-artifact /usr/local/bin/enclava-policy-artifact
 
 FROM debian:bookworm-slim AS runtime
 
@@ -49,6 +50,7 @@ RUN set -eux; \
     chown 65532:65532 /data
 
 COPY --from=builder /usr/local/bin/enclava-policy-signing-service /usr/local/bin/enclava-policy-signing-service
+COPY --from=builder /usr/local/bin/enclava-policy-artifact /usr/local/bin/enclava-policy-artifact
 COPY --from=kata-tools /kata-tools/opt/kata/bin/genpolicy /usr/local/bin/genpolicy
 COPY --from=kata-tools /kata-tools/opt/kata/share/defaults/kata-containers/rules.rego /etc/genpolicy/rules.rego
 COPY --from=kata-tools /kata-tools/opt/kata/share/defaults/kata-containers/genpolicy-settings.json /etc/genpolicy/genpolicy-settings.json
@@ -57,6 +59,7 @@ COPY --from=kata-tools /kata-tools/opt/kata/share/defaults/kata-containers/genpo
 USER 65532:65532
 ENV BIND_ADDR=0.0.0.0:8080 \
     OWNER_DB_PATH=/data/owner-state.sqlite3 \
+    ENABLE_PLATFORM_POLICY_SIGNING=false \
     GENPOLICY_BIN=/usr/local/bin/genpolicy \
     GENPOLICY_RULES_PATH=/etc/genpolicy/rules.rego \
     GENPOLICY_SETTINGS_DIR=/etc/genpolicy

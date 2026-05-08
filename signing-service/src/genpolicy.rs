@@ -17,7 +17,7 @@ const KATA_HYPERVISOR_CC_INIT_DATA_ANNOTATION: &str =
     "io.katacontainers.config.hypervisor.cc_init_data";
 const KATA_RUNTIME_CC_INIT_DATA_ANNOTATION: &str = "io.katacontainers.config.runtime.cc_init_data";
 const KATA_RUNTIME_HANDLER: &str = "kata-qemu-snp";
-const KBS_URL: &str = "http://kbs-service.trustee-operator-system.svc.cluster.local:8080";
+const DEFAULT_KBS_URL: &str = "http://kbs-service.trustee-operator-system.svc.cluster.local:8080";
 const ATTESTATION_PROXY_IMAGE_REPO: &str = "ghcr.io/enclava-ai/attestation-proxy";
 const CADDY_INGRESS_IMAGE_REPO: &str = "ghcr.io/enclava-ai/caddy-ingress";
 const ENCLAVA_WAIT_EXEC_PATH: &str = "/usr/local/bin/enclava-wait-exec";
@@ -29,6 +29,28 @@ fn tenant_caddy_internal_tls_enabled() -> bool {
     std::env::var("TENANT_CADDY_TLS_MODE")
         .map(|value| value.eq_ignore_ascii_case("internal"))
         .unwrap_or(false)
+}
+
+fn trustee_kbs_url() -> String {
+    std::env::var("TRUSTEE_KBS_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_KBS_URL.to_string())
+}
+
+fn trustee_kbs_resource_url() -> String {
+    format!(
+        "{}/kbs/v0/resource",
+        trustee_kbs_url().trim_end_matches('/')
+    )
+}
+
+fn trustee_kbs_ca_cert_pem() -> Option<String> {
+    std::env::var("TRUSTEE_KBS_CA_CERT_PEM")
+        .ok()
+        .map(|value| value.replace("\\n", "\n").trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 #[derive(Debug, Clone)]
@@ -559,7 +581,10 @@ fn cap_runtime_annotations() -> BTreeMap<&'static str, String> {
         ),
         (
             KATA_KERNEL_PARAMS_ANNOTATION,
-            format!("agent.aa_kbc_params=cc_kbc::{KBS_URL} agent.guest_components_rest_api=all"),
+            format!(
+                "agent.aa_kbc_params=cc_kbc::{} agent.guest_components_rest_api=all",
+                trustee_kbs_url()
+            ),
         ),
         (
             KATA_HYPERVISOR_CC_INIT_DATA_ANNOTATION,
@@ -742,6 +767,41 @@ fn app_container(descriptor: &DeploymentDescriptor) -> Value {
 }
 
 fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Result<Value> {
+    let mut env_vars = vec![
+        value_env("ATTESTATION_WORKLOAD_CONTAINER", "web"),
+        field_env("ATTESTATION_POD_NAME", "metadata.name"),
+        field_env("ATTESTATION_POD_NAMESPACE", "metadata.namespace"),
+        value_env("ATTESTATION_PROFILE", "coco-sev-snp"),
+        value_env("ATTESTATION_RUNTIME_CLASS", "kata-qemu-snp"),
+        value_env("ATTESTATION_WORKLOAD_IMAGE", descriptor.image_ref.clone()),
+        value_env("ATTESTATION_BIND", "127.0.0.1"),
+        value_env("ATTESTATION_TLS_BIND", "0.0.0.0"),
+        value_env("ATTESTATION_TLS_PORT", "8443"),
+        value_env("TEE_DOMAIN", descriptor.tee_domain.clone()),
+        value_env(
+            "STORAGE_OWNERSHIP_MODE",
+            storage_ownership_mode(&descriptor.unlock_mode)?,
+        ),
+        value_env(
+            "INSTANCE_ID",
+            format!("{}-{}", descriptor.namespace, descriptor.app_name),
+        ),
+        value_env("OWNER_CIPHERTEXT_BACKEND", "kbs-resource"),
+        value_env("OWNER_SEED_HANDOFF_SLOTS", "app-data"),
+        value_env("OWNERSHIP_MOUNT_PATH", "/run/ownership-signal"),
+        value_env("KBS_RESOURCE_URL", trustee_kbs_resource_url()),
+        value_env("KBS_RESOURCE_CACHE_SECONDS", "300"),
+        value_env("KBS_RESOURCE_FAILURE_CACHE_SECONDS", "30"),
+        value_env("KBS_FETCH_RETRIES", "120"),
+        value_env("KBS_FETCH_RETRY_SLEEP_SECONDS", "2"),
+        value_env("KBS_FETCH_MAX_SLEEP_SECONDS", "10"),
+        value_env("KBS_FETCH_REQUEST_TIMEOUT_SECONDS", "10"),
+        value_env("ENCLAVA_INIT_UNLOCK_SOCKET", "/run/enclava/unlock.sock"),
+    ];
+    if let Some(cert) = trustee_kbs_ca_cert_pem() {
+        env_vars.push(value_env("KBS_RESOURCE_CA_CERT_PEM", cert));
+    }
+
     Ok(json!({
         "name": "attestation-proxy",
         "image": image_ref(ATTESTATION_PROXY_IMAGE_REPO, &descriptor.sidecars.attestation_proxy_digest),
@@ -750,28 +810,7 @@ fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Result<Valu
             {"containerPort": 8081, "name": "attest-http"},
             {"containerPort": 8443, "name": "attestation"},
         ],
-        "env": with_kubernetes_service_env(vec![
-            value_env("ATTESTATION_WORKLOAD_CONTAINER", "web"),
-            field_env("ATTESTATION_POD_NAME", "metadata.name"),
-            field_env("ATTESTATION_POD_NAMESPACE", "metadata.namespace"),
-            value_env("ATTESTATION_PROFILE", "coco-sev-snp"),
-            value_env("ATTESTATION_RUNTIME_CLASS", "kata-qemu-snp"),
-            value_env("ATTESTATION_WORKLOAD_IMAGE", descriptor.image_ref.clone()),
-            value_env("ATTESTATION_TLS_PORT", "8443"),
-            value_env("TEE_DOMAIN", descriptor.tee_domain.clone()),
-            value_env("STORAGE_OWNERSHIP_MODE", storage_ownership_mode(&descriptor.unlock_mode)?),
-            value_env("INSTANCE_ID", format!("{}-{}", descriptor.namespace, descriptor.app_name)),
-            value_env("OWNER_CIPHERTEXT_BACKEND", "kbs-resource"),
-            value_env("OWNER_SEED_HANDOFF_SLOTS", "app-data"),
-            value_env("OWNERSHIP_MOUNT_PATH", "/run/ownership-signal"),
-            value_env("KBS_RESOURCE_CACHE_SECONDS", "300"),
-            value_env("KBS_RESOURCE_FAILURE_CACHE_SECONDS", "30"),
-            value_env("KBS_FETCH_RETRIES", "120"),
-            value_env("KBS_FETCH_RETRY_SLEEP_SECONDS", "2"),
-            value_env("KBS_FETCH_MAX_SLEEP_SECONDS", "10"),
-            value_env("KBS_FETCH_REQUEST_TIMEOUT_SECONDS", "10"),
-            value_env("ENCLAVA_INIT_UNLOCK_SOCKET", "/run/enclava/unlock.sock"),
-        ]),
+        "env": with_kubernetes_service_env(env_vars),
         "volumeMounts": [
             mount("ownership-signal", "/run/ownership-signal", false),
             mount("unlock-socket", "/run/enclava", false),
@@ -1009,6 +1048,16 @@ mod tests {
             .manifest_yaml
             .contains("name: STORAGE_OWNERSHIP_MODE"));
         assert!(invocation.manifest_yaml.contains("value: password"));
+        assert!(invocation.manifest_yaml.contains("name: ATTESTATION_BIND"));
+        assert!(invocation.manifest_yaml.contains("value: 127.0.0.1"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("name: ATTESTATION_TLS_BIND"));
+        assert!(invocation.manifest_yaml.contains("value: 0.0.0.0"));
+        assert!(invocation.manifest_yaml.contains("name: KBS_RESOURCE_URL"));
+        assert!(invocation.manifest_yaml.contains(
+            "value: http://kbs-service.trustee-operator-system.svc.cluster.local:8080/kbs/v0/resource"
+        ));
         assert!(invocation
             .manifest_yaml
             .contains("name: ENCLAVA_INIT_UNLOCK_SOCKET"));

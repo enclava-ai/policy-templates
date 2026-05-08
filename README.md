@@ -4,14 +4,16 @@ This repository owns CAP's authoritative Trustee policy templates and the
 off-cluster signing-service implementation described by
 `cap/SECURITY_MITIGATION_PLAN.md` rev14.
 
-CAP API must not compose policy text. The signing service reconstructs Rego
-from versioned templates in this repository, signs the reconstructed artifact,
-and returns the signed envelope to CAP for Trustee storage.
+CAP API must not compose policy text. The signing service is a deterministic
+policy generator and owner-key registry. Production policy artifacts are signed
+by the customer/deployer key outside the platform service, then CAP verifies and
+transports the signed envelope to Trustee.
 
 ## v1 Decisions
 
 - Key custody: GitHub Actions OIDC + cosign keyless for container provenance;
-  service policy-signing key loaded from platform secret storage at runtime.
+  customer/deployer keys sign policy artifacts. The HTTP service runs without a
+  platform policy-signing key in production.
 - Policy template id: `trustee-resource-policy-v1`.
 - Canonical encoding: CE-v1 raw TLV bytes for Ed25519 signing inputs.
 - Template source of truth: `templates/trustee-resource-policy-v1.rego`.
@@ -30,13 +32,24 @@ and returns the signed envelope to CAP for Trustee storage.
 
 Required production env:
 
-- `POLICY_SIGNING_KEY_B64` - base64 Ed25519 seed, 32 bytes.
-- `POLICY_SIGNING_KEY_ID` - release/key version bound into signed metadata.
+- `SIGNING_SERVICE_BEARER_TOKEN` or `SIGNING_SERVICE_BEARER_TOKENS` - bearer
+  token(s) accepted by `/agent-policy`, `/sign`, `/bootstrap-org`, and
+  `/rotate-owner`.
 - `OWNER_DB_PATH` - durable SQLite owner DB path.
+- `ENABLE_PLATFORM_POLICY_SIGNING=false` - production mode. `/sign` rejects
+  requests, and customers submit their own signed policy artifact.
+- `TRUSTEE_KBS_URL` and `TRUSTEE_KBS_CA_CERT_PEM` - HTTPS Trustee KBS URL and
+  CA certificate used when generating the pod manifest that genpolicy evaluates.
 
 Optional local/dev env:
 
 - `BIND_ADDR` - defaults to `0.0.0.0:8080`.
+- `SIGNING_SERVICE_ALLOW_UNAUTHENTICATED=1` - local-only escape hatch when
+  running the service without bearer auth.
+- `ENABLE_PLATFORM_POLICY_SIGNING=1` plus
+  `ALLOW_RAW_POLICY_SIGNING_KEY_B64=1`, `POLICY_SIGNING_KEY_B64`, and
+  `POLICY_SIGNING_KEY_ID` - compatibility-only platform signing mode. Do not
+  use this in production.
 - `ALLOW_EPHEMERAL_SIGNING_KEY=1` - test-only escape hatch when no signing key
   is configured.
 - `GENPOLICY_BIN`, `GENPOLICY_VERSION_PIN`, `GENPOLICY_SETTINGS_DIR` - see
@@ -62,12 +75,14 @@ the owner SQLite database at `OWNER_DB_PATH`. The default image env sets:
 - `GENPOLICY_SETTINGS_DIR=/etc/genpolicy`
 
 Production deployments must mount durable storage at `/data` and provide
-`POLICY_SIGNING_KEY_B64`, `POLICY_SIGNING_KEY_ID`, `OWNER_DB_PATH`, and a
-pinned `GENPOLICY_VERSION_PIN`. The image bakes Kata `genpolicy` from the
+`SIGNING_SERVICE_BEARER_TOKEN`, `OWNER_DB_PATH`, and a pinned
+`GENPOLICY_VERSION_PIN`. The image bakes Kata `genpolicy` from the
 pinned `kata-tools-static` release plus `rules.rego` and the default settings
 under `/etc/genpolicy`; override `GENPOLICY_BIN`, `GENPOLICY_RULES_PATH`, or
 `GENPOLICY_SETTINGS_DIR` only when shipping a new platform release. Do not set
-`ALLOW_EPHEMERAL_SIGNING_KEY` outside local tests.
+`SIGNING_SERVICE_ALLOW_UNAUTHENTICATED`, `ENABLE_PLATFORM_POLICY_SIGNING`,
+`ALLOW_RAW_POLICY_SIGNING_KEY_B64`, or `ALLOW_EPHEMERAL_SIGNING_KEY` outside
+local tests.
 
 cap-test01 currently records the live Kata runtime source as
 `kata-containers/genpolicy@3.28.0+660e3bb6535b141c84430acb25b159857278d596`.
@@ -78,11 +93,12 @@ The Dockerfile verifies the matching
 
 Minimal Kubernetes scaffolding lives in
 `signing-service/deploy/kubernetes.yaml`. Before applying it, replace the image
-placeholder with an immutable digest, source the signing key from the platform
+placeholder with an immutable digest, source the bearer token from the platform
 secret manager, set the genpolicy version pin, and wire any genpolicy binary or
 settings mounts required by the release.
 
-`POST /sign` no longer accepts caller-provided policy slots. It decodes the
+`POST /sign` is disabled in production. If explicitly enabled for a transitional
+environment, it no longer accepts caller-provided policy slots. It decodes the
 descriptor and keyring blobs, verifies:
 
 1. org keyring owner signature against the bootstrapped owner pubkey in the
@@ -103,8 +119,22 @@ For customer/CI-signed artifacts, use the standalone generator instead of the
 HTTP signing-service authorization key:
 
 ```bash
-cd signing-service
 export ENCLAVA_POLICY_ARTIFACT_SIGNING_SEED_HEX=<deployment-key-seed-hex>
+docker run --rm \
+  -e ENCLAVA_POLICY_ARTIFACT_SIGNING_SEED_HEX \
+  -v "$PWD:/work" -w /work \
+  ghcr.io/enclava-ai/policy-signing-service:<version> \
+  /usr/local/bin/enclava-policy-artifact \
+  --request sign-request.json \
+  --owner-pubkey-hex <trusted-org-owner-pubkey-hex> \
+  --key-id github-actions:<repo>:<workflow> \
+  --out signed-policy-artifact.json
+```
+
+For local development against the source tree:
+
+```bash
+cd signing-service
 cargo run --locked --bin policy-artifact -- \
   --request sign-request.json \
   --owner-pubkey-hex <trusted-org-owner-pubkey-hex> \
@@ -127,7 +157,7 @@ Every platform release must publish:
 - `policy_template_id`
 - `policy_template_sha256`
 - `policy_template_text`
-- signing-service verify pubkey
+- customer/org owner trust anchors used by Trustee
 - genpolicy version pin
 - signing-service image digest/provenance
 

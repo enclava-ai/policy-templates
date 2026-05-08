@@ -2,8 +2,9 @@ use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{anyhow, Context, Result};
 use axum::{
-    extract::State,
-    http::StatusCode,
+    extract::{Request, State},
+    http::{header, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -28,10 +29,16 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 struct AppState {
-    key_material: Arc<SigningKeyMaterial>,
+    key_material: Option<Arc<SigningKeyMaterial>>,
     owner_store: Arc<OwnerStore>,
     genpolicy: GenpolicyConfig,
     template_sha256: String,
+    auth: Arc<ServiceAuth>,
+}
+
+#[derive(Clone)]
+struct ServiceAuth {
+    token_hashes: Vec<[u8; 32]>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,7 +80,7 @@ struct HealthResponse {
     status: &'static str,
     policy_template_id: &'static str,
     policy_template_sha256: String,
-    signing_key_id: String,
+    platform_policy_signing_enabled: bool,
     genpolicy_version_pin: String,
 }
 
@@ -95,24 +102,39 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let key_material = load_signing_key_material()?;
+    let platform_policy_signing_enabled = env_flag("ENABLE_PLATFORM_POLICY_SIGNING");
+    let key_material = if platform_policy_signing_enabled {
+        Some(Arc::new(load_signing_key_material()?))
+    } else {
+        None
+    };
     let owner_db_path = env::var("OWNER_DB_PATH").unwrap_or_else(|_| "owner-state.sqlite3".into());
     let owner_store = OwnerStore::open(PathBuf::from(owner_db_path))?;
     let genpolicy = GenpolicyConfig::from_env();
     genpolicy.require_pinned_version()?;
+    let auth = ServiceAuth::from_env()?;
     let state = AppState {
-        key_material: Arc::new(key_material),
+        key_material,
         owner_store: Arc::new(owner_store),
         genpolicy,
         template_sha256: hex::encode(template_sha256()),
+        auth: Arc::new(auth),
     };
 
-    let app = Router::new()
-        .route("/healthz", get(healthz))
+    let protected_routes = Router::new()
         .route("/agent-policy", post(generate_agent_policy))
         .route("/sign", post(sign_policy))
         .route("/bootstrap-org", post(bootstrap_org))
         .route("/rotate-owner", post(rotate_owner))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_service_auth,
+        ))
+        .with_state(state.clone());
+
+    let app = Router::new()
+        .route("/healthz", get(healthz))
+        .merge(protected_routes)
         .with_state(state);
 
     let addr: SocketAddr = env::var("BIND_ADDR")
@@ -132,9 +154,21 @@ async fn healthz(State(state): State<AppState>) -> Json<HealthResponse> {
         status: "ok",
         policy_template_id: TEMPLATE_ID,
         policy_template_sha256: state.template_sha256,
-        signing_key_id: state.key_material.key_id.clone(),
+        platform_policy_signing_enabled: state.key_material.is_some(),
         genpolicy_version_pin: state.genpolicy.version_pin,
     })
+}
+
+async fn require_service_auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    if state.auth.authorizes(&req) {
+        return next.run(req).await;
+    }
+    (
+        StatusCode::UNAUTHORIZED,
+        [(header::WWW_AUTHENTICATE, "Bearer")],
+        "signing-service bearer token required",
+    )
+        .into_response()
 }
 
 async fn generate_agent_policy(
@@ -157,6 +191,11 @@ async fn sign_policy(
     State(state): State<AppState>,
     Json(req): Json<SignRequest>,
 ) -> Result<Json<SignedPolicyArtifact>, AppError> {
+    let key_material = state.key_material.as_ref().ok_or_else(|| {
+        anyhow!(
+            "platform policy signing is disabled; submit a customer-signed policy artifact instead"
+        )
+    })?;
     let blobs = decode_signing_blobs(&req)?;
     if blobs.descriptor_envelope.descriptor.org_id != blobs.keyring_envelope.keyring.org_id {
         return Err(AppError(anyhow!(
@@ -178,12 +217,86 @@ async fn sign_policy(
         &req,
         inputs,
         generated_agent_policy,
-        &state.key_material,
+        key_material,
         Utc::now(),
     )?;
-    let verify_key = state.key_material.signing_key.verifying_key();
+    let verify_key = key_material.signing_key.verifying_key();
     verify_signed_artifact(&artifact, &verify_key)?;
     Ok(Json(artifact))
+}
+
+fn env_flag(name: &str) -> bool {
+    env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
+impl ServiceAuth {
+    fn from_env() -> Result<Self> {
+        let mut tokens = Vec::new();
+        if let Ok(token) = env::var("SIGNING_SERVICE_BEARER_TOKEN") {
+            push_tokens(&mut tokens, &token);
+        }
+        if let Ok(token_list) = env::var("SIGNING_SERVICE_BEARER_TOKENS") {
+            push_tokens(&mut tokens, &token_list);
+        }
+
+        if tokens.is_empty() {
+            if env_flag("SIGNING_SERVICE_ALLOW_UNAUTHENTICATED") {
+                return Ok(Self {
+                    token_hashes: Vec::new(),
+                });
+            }
+            anyhow::bail!(
+                "SIGNING_SERVICE_BEARER_TOKEN or SIGNING_SERVICE_BEARER_TOKENS is required; set SIGNING_SERVICE_ALLOW_UNAUTHENTICATED=1 only for local development"
+            );
+        }
+
+        Ok(Self {
+            token_hashes: tokens
+                .into_iter()
+                .map(|token| Sha256::digest(token.as_bytes()).into())
+                .collect(),
+        })
+    }
+
+    fn authorizes(&self, req: &Request) -> bool {
+        if self.token_hashes.is_empty() {
+            return true;
+        }
+        let Some(token) = bearer_token(req) else {
+            return false;
+        };
+        let candidate: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+        self.token_hashes
+            .iter()
+            .any(|trusted| constant_time_eq(trusted, &candidate))
+    }
+}
+
+fn push_tokens(tokens: &mut Vec<String>, raw: &str) {
+    tokens.extend(
+        raw.split(|c: char| c == ',' || c.is_ascii_whitespace())
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .map(ToString::to_string),
+    );
+}
+
+fn bearer_token(req: &Request) -> Option<&str> {
+    let raw = req.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
+    raw.strip_prefix("Bearer ")
+        .or_else(|| raw.strip_prefix("bearer "))
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+}
+
+fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
+    let mut diff = 0u8;
+    for (a, b) in left.iter().zip(right.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
 }
 
 async fn bootstrap_org(
@@ -336,6 +449,7 @@ impl IntoResponse for AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
     use ed25519_dalek::{Signer, SigningKey};
 
     #[test]
@@ -355,5 +469,34 @@ mod tests {
         );
         let signature = current.sign(&bytes);
         current.verifying_key().verify(&bytes, &signature).unwrap();
+    }
+
+    #[test]
+    fn bearer_auth_accepts_only_configured_tokens() {
+        let auth = ServiceAuth {
+            token_hashes: vec![Sha256::digest(b"correct-token").into()],
+        };
+        let ok = Request::builder()
+            .header(header::AUTHORIZATION, "Bearer correct-token")
+            .body(Body::empty())
+            .unwrap();
+        let wrong = Request::builder()
+            .header(header::AUTHORIZATION, "Bearer wrong-token")
+            .body(Body::empty())
+            .unwrap();
+        let missing = Request::builder().body(Body::empty()).unwrap();
+
+        assert!(auth.authorizes(&ok));
+        assert!(!auth.authorizes(&wrong));
+        assert!(!auth.authorizes(&missing));
+    }
+
+    #[test]
+    fn bearer_auth_disabled_only_when_token_list_is_empty() {
+        let auth = ServiceAuth {
+            token_hashes: Vec::new(),
+        };
+        let req = Request::builder().body(Body::empty()).unwrap();
+        assert!(auth.authorizes(&req));
     }
 }

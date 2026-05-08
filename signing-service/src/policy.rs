@@ -79,6 +79,11 @@ pub struct VerifiedSigningInputs {
 pub fn load_signing_key_material() -> Result<SigningKeyMaterial> {
     match std::env::var("POLICY_SIGNING_KEY_B64") {
         Ok(raw) => {
+            if std::env::var("ALLOW_RAW_POLICY_SIGNING_KEY_B64").as_deref() != Ok("1") {
+                bail!(
+                    "POLICY_SIGNING_KEY_B64 raw-env loading is disabled; use customer-signed artifacts or an external signer, or set ALLOW_RAW_POLICY_SIGNING_KEY_B64=1 only for non-production compatibility"
+                );
+            }
             let key_id = std::env::var("POLICY_SIGNING_KEY_ID")
                 .context("POLICY_SIGNING_KEY_ID is required when POLICY_SIGNING_KEY_B64 is set")?;
             let bytes = B64
