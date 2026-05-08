@@ -1,25 +1,25 @@
 {
   "agent_policy_sha256": "a0fdb4fec66e81b11e1294dc662dc3134491d35aed83ce47c740ade3c9bcfcab",
-  "canonical_policy_metadata_hash": "65b67b9c304c5eac8ee7e6a21ed3706772615205533dacb26d5223265c5b139f",
+  "canonical_policy_metadata_hash": "9cd17641395b4b342ff0f43275ef775139890429c23ef293fbec2976223b2f73",
   "ed25519_signs": "ce_v1_bytes(records), not ce_v1_hash(records)",
   "encoding": "ce-v1-raw-tlv",
   "metadata": {
     "agent_policy_sha256": "a0fdb4fec66e81b11e1294dc662dc3134491d35aed83ce47c740ade3c9bcfcab",
     "app_id": "22222222-2222-2222-2222-222222222222",
     "deploy_id": "33333333-3333-3333-3333-333333333333",
-    "descriptor_core_hash": "cd5aba8140e5474d5eb1b3cf46a2af56c1575229db9a569d1b0eeb2041441c91",
+    "descriptor_core_hash": "14c63dd863c4fb3726aa4d50ba4d685243c979111756d364bb769f7ec05ffb15",
     "descriptor_signing_pubkey": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
     "genpolicy_version_pin": "kata-containers/genpolicy@3.28.0+test",
     "key_id": "policy-test-key-v1",
     "platform_release_version": "platform-2026.04",
     "policy_template_id": "trustee-resource-policy-v1",
-    "policy_template_sha256": "43957bf6c67be8d3500c779de5631144c582df9da7a553a3dc0c0d2a5195b659",
+    "policy_template_sha256": "1471cba4cf1aa7f1eb5ca92133c7c375b439c70ee154e71df5e5c99c185ab7ed",
     "signed_at": "2026-04-01T12:30:00+00:00"
   },
   "purpose": "enclava-policy-artifact-v1",
-  "rego_sha256": "feec4fd34b5ddd4a14260263adecf57f93836db431f54459d3e1dd673425f0ad",
+  "rego_sha256": "2150f156c5a2d98e0d584a3f649aafed0bceca63483de7ac87d2729fce1cbf8d",
   "service_signing_seed_b64": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=",
-  "signature": "e0c79ca1549eb453d98929c31d572387854377948292ef98835f941379c473f2354429707aa8ba5d6cca2c8130e599297fd38e837bc09c80600fd2a8ce6afa08",
-  "signing_input_hex": "0007707572706f73650000001a656e636c6176612d706f6c6963792d61727469666163742d763100086d657461646174610000002065b67b9c304c5eac8ee7e6a21ed3706772615205533dacb26d5223265c5b139f000b7265676f5f73686132353600000020feec4fd34b5ddd4a14260263adecf57f93836db431f54459d3e1dd673425f0ad",
+  "signature": "a2c4ff4d0b6d3e22de69fccef225f7f569e744a88a3f3e0c2f3505b91516c96c04b7226b745cc9a0bd077a8f7ec1e4e8e3a3241ce45b51ea6290796536dfdc09",
+  "signing_input_hex": "0007707572706f73650000001a656e636c6176612d706f6c6963792d61727469666163742d763100086d65746164617461000000209cd17641395b4b342ff0f43275ef775139890429c23ef293fbec2976223b2f73000b7265676f5f736861323536000000202150f156c5a2d98e0d584a3f649aafed0bceca63483de7ac87d2729fce1cbf8d",
   "verify_pubkey_b64": "F8t5+ytBIPKx7GXkGY1uCLKOgT/rAeSkAIObheGAgM4="
 }

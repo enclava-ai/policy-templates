@@ -19,14 +19,14 @@ allow if {
   data.plugin == "resource"
   data.method == "GET"
   attested_workload
-  requested_resource_path == expected_resource_path
+  requested_resource_path_allowed
 }
 
 allow if {
   data.plugin == "workload-resource"
   data.method == "PUT"
   attested_workload
-  requested_resource_path == expected_resource_path
+  requested_resource_path_allowed
   data.request.body.operation == "rekey"
   data.request.body.receipt.pubkey_hash_matches
   data.request.body.receipt.signature_valid
@@ -39,7 +39,7 @@ allow if {
   data.plugin == "workload-resource"
   data.method == "DELETE"
   attested_workload
-  requested_resource_path == expected_resource_path
+  requested_resource_path_allowed
   data.request.body.operation == "teardown"
   data.request.body.receipt.pubkey_hash_matches
   data.request.body.receipt.signature_valid
@@ -67,6 +67,28 @@ requested_resource_path := path if {
   rp := data["resource-path"]
   is_string(rp)
   path := trim(rp, "/")
+}
+
+requested_resource_path_allowed if {
+  requested_resource_path in allowed_resource_paths
+}
+
+allowed_resource_paths contains expected_resource_path
+
+allowed_resource_paths contains path if {
+  path := owner_seed_sibling_path("seed-encrypted", "seed-sealed")
+}
+
+allowed_resource_paths contains path if {
+  path := owner_seed_sibling_path("seed-sealed", "seed-encrypted")
+}
+
+owner_seed_sibling_path(from_tag, to_tag) := path if {
+  parts := split(expected_resource_path, "/")
+  count(parts) == 3
+  endswith(parts[1], "-owner")
+  parts[2] == from_tag
+  path := concat("/", [parts[0], parts[1], to_tag])
 }
 
 claim_roots contains root if {
