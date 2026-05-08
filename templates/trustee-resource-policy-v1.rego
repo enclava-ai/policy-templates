@@ -16,42 +16,189 @@ expected_identity_hash := "{{identity_hash}}"
 expected_resource_path := "{{kbs_resource_path}}"
 
 allow if {
-  input.method == "GET"
+  data.plugin == "resource"
+  data.method == "GET"
   attested_workload
   requested_resource_path == expected_resource_path
 }
 
 allow if {
-  input.method == "PUT"
+  data.plugin == "workload-resource"
+  data.method == "PUT"
   attested_workload
   requested_resource_path == expected_resource_path
-  input.request.body.operation == "rekey"
-  input.request.body.receipt.pubkey_hash_matches
-  input.request.body.receipt.signature_valid
-  input.request.body.receipt.payload.purpose == "enclava-rekey-v1"
-  input.request.body.receipt.payload.resource_path == requested_resource_path
-  input.request.body.value_hash_matches
+  data.request.body.operation == "rekey"
+  data.request.body.receipt.pubkey_hash_matches
+  data.request.body.receipt.signature_valid
+  data.request.body.receipt.payload.purpose == "enclava-rekey-v1"
+  data.request.body.receipt.payload.resource_path == requested_resource_path
+  data.request.body.value_hash_matches
 }
 
 allow if {
-  input.method == "DELETE"
+  data.plugin == "workload-resource"
+  data.method == "DELETE"
   attested_workload
   requested_resource_path == expected_resource_path
-  input.request.body.operation == "teardown"
-  input.request.body.receipt.pubkey_hash_matches
-  input.request.body.receipt.signature_valid
-  input.request.body.receipt.payload.purpose == "enclava-teardown-v1"
-  input.request.body.receipt.payload.resource_path == requested_resource_path
+  data.request.body.operation == "teardown"
+  data.request.body.receipt.pubkey_hash_matches
+  data.request.body.receipt.signature_valid
+  data.request.body.receipt.payload.purpose == "enclava-teardown-v1"
+  data.request.body.receipt.payload.resource_path == requested_resource_path
 }
 
 attested_workload if {
-  input.snp.init_data_hash == expected_init_data_hash
-  input.init_data_claims.image_digest == expected_image_digest
-  input.init_data_claims.signer_identity.subject == expected_signer_subject
-  input.init_data_claims.signer_identity.issuer == expected_signer_issuer
-  input.init_data_claims.namespace == expected_namespace
-  input.init_data_claims.service_account == expected_service_account
-  input.init_data_claims.identity_hash == expected_identity_hash
+  expected_init_data_hash in claim_init_data_hashes
+  expected_image_digest in claim_image_digests
+  expected_signer_subject in claim_signer_subjects
+  expected_signer_issuer in claim_signer_issuers
+  expected_namespace in claim_namespaces
+  expected_service_account in claim_service_accounts
+  expected_identity_hash in claim_identity_hashes
 }
 
-requested_resource_path := concat("/", input["resource-path"])
+requested_resource_path := path if {
+  rp := data["resource-path"]
+  is_array(rp)
+  path := concat("/", rp)
+}
+
+requested_resource_path := path if {
+  rp := data["resource-path"]
+  is_string(rp)
+  path := trim(rp, "/")
+}
+
+claim_roots contains root if {
+  root := input
+}
+
+claim_roots contains root if {
+  root := object.get(input, "claims", {})
+  is_object(root)
+}
+
+annotated_evidences contains ev if {
+  some root in claim_roots
+  cpu0 := object.get(object.get(root, "submods", {}), "cpu0", {})
+  ev := object.get(cpu0, "ear.veraison.annotated-evidence", {})
+  is_object(ev)
+}
+
+claim_init_data_hashes contains hash if {
+  some root in claim_roots
+  raw := object.get(object.get(root, "snp", {}), "init_data_hash", "")
+  non_empty_string(raw)
+  hash := lower(raw)
+}
+
+claim_init_data_hashes contains hash if {
+  some root in claim_roots
+  raw := object.get(root, "init_data_hash", "")
+  non_empty_string(raw)
+  hash := lower(raw)
+}
+
+claim_init_data_hashes contains hash if {
+  some ev in annotated_evidences
+  raw := object.get(ev, "init_data", "")
+  non_empty_string(raw)
+  hash := lower(raw)
+}
+
+claim_init_data_hashes contains hash if {
+  some ev in annotated_evidences
+  raw := object.get(ev, "init_data_hash", "")
+  non_empty_string(raw)
+  hash := lower(raw)
+}
+
+claim_init_data_hashes contains hash if {
+  some root in claim_roots
+  cpu0 := object.get(object.get(root, "submods", {}), "cpu0", {})
+  raw := object.get(cpu0, "ear.veraison.annotated-evidence.init_data", "")
+  non_empty_string(raw)
+  hash := lower(raw)
+}
+
+init_data_claims_values contains idc if {
+  some root in claim_roots
+  idc := object.get(root, "init_data_claims", {})
+  is_object(idc)
+}
+
+init_data_claims_values contains idc if {
+  some ev in annotated_evidences
+  idc := object.get(ev, "init_data_claims", {})
+  is_object(idc)
+}
+
+init_data_claims_values contains idc if {
+  some root in claim_roots
+  cpu0 := object.get(object.get(root, "submods", {}), "cpu0", {})
+  idc := object.get(cpu0, "ear.veraison.annotated-evidence.init_data_claims", {})
+  is_object(idc)
+}
+
+init_data_claims_values contains idc if {
+  some root in claim_roots
+  cpu0 := object.get(object.get(root, "submods", {}), "cpu0", {})
+  idc := object.get(cpu0, "init_data_claims", {})
+  is_object(idc)
+}
+
+claim_image_digests contains value if {
+  some idc in init_data_claims_values
+  value := object.get(idc, "image_digest", "")
+  non_empty_string(value)
+}
+
+claim_signer_subjects contains value if {
+  some idc in init_data_claims_values
+  value := object.get(idc, "signer_identity_subject", "")
+  non_empty_string(value)
+}
+
+claim_signer_subjects contains value if {
+  some idc in init_data_claims_values
+  signer := object.get(idc, "signer_identity", {})
+  value := object.get(signer, "subject", "")
+  non_empty_string(value)
+}
+
+claim_signer_issuers contains value if {
+  some idc in init_data_claims_values
+  value := object.get(idc, "signer_identity_issuer", "")
+  non_empty_string(value)
+}
+
+claim_signer_issuers contains value if {
+  some idc in init_data_claims_values
+  signer := object.get(idc, "signer_identity", {})
+  value := object.get(signer, "issuer", "")
+  non_empty_string(value)
+}
+
+claim_namespaces contains value if {
+  some idc in init_data_claims_values
+  value := object.get(idc, "namespace", "")
+  non_empty_string(value)
+}
+
+claim_service_accounts contains value if {
+  some idc in init_data_claims_values
+  value := object.get(idc, "service_account", "")
+  non_empty_string(value)
+}
+
+claim_identity_hashes contains hash if {
+  some idc in init_data_claims_values
+  raw := object.get(idc, "identity_hash", "")
+  non_empty_string(raw)
+  hash := lower(raw)
+}
+
+non_empty_string(value) if {
+  is_string(value)
+  value != ""
+}

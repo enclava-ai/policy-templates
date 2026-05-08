@@ -1,25 +1,25 @@
 {
   "agent_policy_sha256": "a0fdb4fec66e81b11e1294dc662dc3134491d35aed83ce47c740ade3c9bcfcab",
-  "canonical_policy_metadata_hash": "4e839a30f6cbde4531a8b61427076711608dc7e86a6328fae9e7a79172c13b21",
+  "canonical_policy_metadata_hash": "f6e25832a8d92c3418a225d0cf965ac4852edc24d572392af84d87f6e0196cb2",
   "ed25519_signs": "ce_v1_bytes(records), not ce_v1_hash(records)",
   "encoding": "ce-v1-raw-tlv",
   "metadata": {
     "agent_policy_sha256": "a0fdb4fec66e81b11e1294dc662dc3134491d35aed83ce47c740ade3c9bcfcab",
     "app_id": "22222222-2222-2222-2222-222222222222",
     "deploy_id": "33333333-3333-3333-3333-333333333333",
-    "descriptor_core_hash": "ec81d908766b358e83b63be319efc67e0bb182ec9e11c6ac42887df50f5111b8",
+    "descriptor_core_hash": "46cd9a88f1922c4e759a29ed00413f3e0022b6800a410639bd2f684bffbe4f88",
     "descriptor_signing_pubkey": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
     "genpolicy_version_pin": "kata-containers/genpolicy@3.28.0+test",
     "key_id": "policy-test-key-v1",
     "platform_release_version": "platform-2026.04",
     "policy_template_id": "trustee-resource-policy-v1",
-    "policy_template_sha256": "e808dd6a40402bad50ea9522cdcd60b6739b78e21006942f4072a08355a24f10",
+    "policy_template_sha256": "cacf863e5b61f0d7920762f7e84c403dad4a8b8321336c307d24fcf35382aa04",
     "signed_at": "2026-04-01T12:30:00+00:00"
   },
   "purpose": "enclava-policy-artifact-v1",
-  "rego_sha256": "244b1092b2392d188d72f06ac69347b7c8ae89777619a8e95f523a041f6e5372",
+  "rego_sha256": "24c22b9803da9085603801195db6f5b069f0068027d749447784596fd421f4d7",
   "service_signing_seed_b64": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=",
-  "signature": "c7a28e6992627d6b69a90e09aed628af7a40cd1e46480481b030791fae41e0757b3819c5febf943e1bd8abcccbf3a13dd84844b40f42cfcf25cd56f97f89da09",
-  "signing_input_hex": "0007707572706f73650000001a656e636c6176612d706f6c6963792d61727469666163742d763100086d65746164617461000000204e839a30f6cbde4531a8b61427076711608dc7e86a6328fae9e7a79172c13b21000b7265676f5f73686132353600000020244b1092b2392d188d72f06ac69347b7c8ae89777619a8e95f523a041f6e5372",
+  "signature": "5aaea4f2c81be229921131a206ea5e1506214ae2ffa96592395264b9f6813d643f795438b0a11b308c56bf5f43f2695d626ded1f9cb71e2a03496ce8313ab100",
+  "signing_input_hex": "0007707572706f73650000001a656e636c6176612d706f6c6963792d61727469666163742d763100086d6574616461746100000020f6e25832a8d92c3418a225d0cf965ac4852edc24d572392af84d87f6e0196cb2000b7265676f5f7368613235360000002024c22b9803da9085603801195db6f5b069f0068027d749447784596fd421f4d7",
   "verify_pubkey_b64": "F8t5+ytBIPKx7GXkGY1uCLKOgT/rAeSkAIObheGAgM4="
 }

@@ -618,12 +618,16 @@ mod tests {
         let descriptor = descriptor_for_service();
         let rendered = render_template(&descriptor).unwrap();
 
-        assert!(rendered.contains("input.method == \"GET\""));
+        assert!(rendered.contains("data.plugin == \"resource\""));
+        assert!(rendered.contains("data.method == \"GET\""));
         assert!(rendered.contains("attested_workload"));
         assert!(rendered.contains("requested_resource_path == expected_resource_path"));
         assert!(
             rendered.contains("expected_resource_path := \"default/cap-abcd1234-demo-tls-owner\"")
         );
+        assert!(rendered.contains("rp := data[\"resource-path\"]"));
+        assert!(rendered.contains("object.get(ev, \"init_data_claims\", {})"));
+        assert!(rendered.contains("object.get(idc, \"signer_identity_subject\", \"\")"));
         assert!(!rendered.contains("{{"));
     }
 
@@ -631,16 +635,17 @@ mod tests {
     fn rendered_policy_requires_receipts_for_rekey_and_teardown() {
         let rendered = render_template(&descriptor_for_service()).unwrap();
         let required_clauses = [
-            "input.method == \"PUT\"",
-            "input.request.body.operation == \"rekey\"",
-            "input.request.body.receipt.pubkey_hash_matches",
-            "input.request.body.receipt.signature_valid",
-            "input.request.body.receipt.payload.purpose == \"enclava-rekey-v1\"",
-            "input.request.body.receipt.payload.resource_path == requested_resource_path",
-            "input.request.body.value_hash_matches",
-            "input.method == \"DELETE\"",
-            "input.request.body.operation == \"teardown\"",
-            "input.request.body.receipt.payload.purpose == \"enclava-teardown-v1\"",
+            "data.plugin == \"workload-resource\"",
+            "data.method == \"PUT\"",
+            "data.request.body.operation == \"rekey\"",
+            "data.request.body.receipt.pubkey_hash_matches",
+            "data.request.body.receipt.signature_valid",
+            "data.request.body.receipt.payload.purpose == \"enclava-rekey-v1\"",
+            "data.request.body.receipt.payload.resource_path == requested_resource_path",
+            "data.request.body.value_hash_matches",
+            "data.method == \"DELETE\"",
+            "data.request.body.operation == \"teardown\"",
+            "data.request.body.receipt.payload.purpose == \"enclava-teardown-v1\"",
         ];
 
         for clause in required_clauses {
