@@ -637,6 +637,20 @@ fn mount(name: &str, mount_path: &str, read_only: bool) -> Value {
     })
 }
 
+fn mount_with_propagation(
+    name: &str,
+    mount_path: &str,
+    read_only: bool,
+    propagation: &str,
+) -> Value {
+    json!({
+        "name": name,
+        "mountPath": mount_path,
+        "readOnly": read_only,
+        "mountPropagation": propagation,
+    })
+}
+
 fn caps(drop: &[&str], add: &[&str]) -> Value {
     let mut capabilities = Map::new();
     capabilities.insert(
@@ -693,7 +707,7 @@ fn app_container(descriptor: &DeploymentDescriptor) -> Value {
     let volume_mounts = vec![
         mount("startup", "/startup", true),
         mount("unlock-socket", "/run/enclava", false),
-        mount("state-mount", "/state", false),
+        mount_with_propagation("state-mount", "/state", false, "HostToContainer"),
     ];
     let env = with_kubernetes_service_env(
         oci.env
@@ -811,8 +825,8 @@ fn enclava_init_container() -> Result<Value> {
             value_env("ENCLAVA_INIT_WAIT_FOR_CONTAINERS", "web,tenant-ingress"),
         ]),
         "volumeMounts": [
-            mount("state-mount", "/state", false),
-            mount("tls-state-mount", "/state/tls-state", false),
+            mount_with_propagation("state-mount", "/state", false, "Bidirectional"),
+            mount_with_propagation("tls-state-mount", "/state/tls-state", false, "Bidirectional"),
             mount("unlock-socket", "/run/enclava", false),
             mount("enclava-init-config", "/etc/enclava-init", true),
         ],
@@ -940,7 +954,12 @@ mod tests {
         assert!(invocation
             .manifest_yaml
             .contains("shareProcessNamespace: true"));
-        assert!(!invocation.manifest_yaml.contains("mountPropagation"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("mountPropagation: HostToContainer"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("mountPropagation: Bidirectional"));
         assert!(invocation.manifest_yaml.contains("fsGroup: 10001"));
         assert!(invocation.manifest_yaml.contains("supplementalGroups:"));
         assert!(!invocation.manifest_yaml.contains("defaultMode"));
