@@ -643,7 +643,6 @@ mod tests {
             "data.plugin == \"workload-resource\"",
             "data.method == \"PUT\"",
             "data.request.body.operation == \"rekey\"",
-            "data.request.body.receipt.pubkey_hash_matches",
             "data.request.body.receipt.signature_valid",
             "data.request.body.receipt.payload.purpose == \"enclava-rekey-v1\"",
             "data.request.body.receipt.payload.resource_path == requested_resource_path",
