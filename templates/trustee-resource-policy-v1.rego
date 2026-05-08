@@ -153,6 +153,17 @@ claim_image_digests contains value if {
   non_empty_string(value)
 }
 
+claim_image_digests contains digest if {
+  some idc in init_data_claims_values
+  value := object.get(idc, "image_digest", "")
+  non_empty_string(value)
+  parts := split(value, "@")
+  n := count(parts)
+  n > 1
+  digest := parts[n - 1]
+  startswith(digest, "sha256:")
+}
+
 claim_signer_subjects contains value if {
   some idc in init_data_claims_values
   value := object.get(idc, "signer_identity_subject", "")

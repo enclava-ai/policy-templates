@@ -628,6 +628,7 @@ mod tests {
         assert!(rendered.contains("rp := data[\"resource-path\"]"));
         assert!(rendered.contains("object.get(ev, \"init_data_claims\", {})"));
         assert!(rendered.contains("object.get(idc, \"signer_identity_subject\", \"\")"));
+        assert!(rendered.contains("parts := split(value, \"@\")"));
         assert!(!rendered.contains("{{"));
     }
 
