@@ -797,10 +797,10 @@ fn tenant_ingress_container(descriptor: &DeploymentDescriptor) -> Value {
             field_env("POD_NAME", "metadata.name"),
             field_env("POD_NAMESPACE", "metadata.namespace"),
             value_env("CADDY_SEED_PATH", "/run/enclava/seeds/caddy/seed"),
-            value_env("VOLUME_MOUNT_POINT", "/tls-state"),
-            value_env("XDG_DATA_HOME", "/tls-state/caddy"),
-            value_env("XDG_CONFIG_HOME", "/tls-state/caddy/config"),
-            value_env("HOME", "/tls-state"),
+            value_env("VOLUME_MOUNT_POINT", "/tmp/enclava-tls-state"),
+            value_env("XDG_DATA_HOME", "/tmp/enclava-tls-state/caddy"),
+            value_env("XDG_CONFIG_HOME", "/tmp/enclava-tls-state/caddy/config"),
+            value_env("HOME", "/tmp/enclava-tls-state"),
             value_env("ENCLAVA_CONTAINER_NAME", "tenant-ingress"),
             value_env("ENCLAVA_STARTED_DIR", "/run/enclava/containers"),
             value_env("ENCLAVA_INIT_READY_FILE", "/run/enclava/init-ready"),
@@ -1000,7 +1000,7 @@ mod tests {
         assert!(invocation.manifest_yaml.contains("name: XDG_CONFIG_HOME"));
         assert!(invocation
             .manifest_yaml
-            .contains("value: /tls-state/caddy/config"));
+            .contains("value: /tmp/enclava-tls-state/caddy/config"));
         assert!(invocation.manifest_yaml.contains("- name: A"));
         assert!(invocation.manifest_yaml.contains("value: '1'"));
     }
