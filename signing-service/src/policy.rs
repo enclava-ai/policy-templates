@@ -627,9 +627,8 @@ mod tests {
         );
         assert!(rendered.contains("rp := data[\"resource-path\"]"));
         assert!(rendered.contains("allowed_resource_paths contains expected_resource_path"));
-        assert!(rendered.contains(
-            "path := owner_seed_sibling_path(\"seed-encrypted\", \"seed-sealed\")"
-        ));
+        assert!(rendered
+            .contains("path := owner_seed_sibling_path(\"seed-encrypted\", \"seed-sealed\")"));
         assert!(rendered.contains("endswith(parts[1], \"-owner\")"));
         assert!(rendered.contains("object.get(ev, \"init_data_claims\", {})"));
         assert!(rendered.contains("object.get(idc, \"signer_identity_subject\", \"\")"));
