@@ -773,6 +773,7 @@ fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Result<Valu
             value_env("KBS_FETCH_RETRY_SLEEP_SECONDS", "2"),
             value_env("KBS_FETCH_MAX_SLEEP_SECONDS", "10"),
             value_env("KBS_FETCH_REQUEST_TIMEOUT_SECONDS", "10"),
+            value_env("ENCLAVA_INIT_UNLOCK_SOCKET", "/run/enclava/unlock.sock"),
         ]),
         "volumeMounts": [
             mount("ownership-signal", "/run/ownership-signal", false),
@@ -834,6 +835,7 @@ fn enclava_init_container() -> Result<Value> {
             value_env("ENCLAVA_INIT_STAY_ALIVE", "true"),
             value_env("ENCLAVA_INIT_READY_FILE", "/run/enclava/init-ready"),
             value_env("ENCLAVA_INIT_STARTED_DIR", "/run/enclava/containers"),
+            value_env("ENCLAVA_INIT_UNLOCK_SOCKET_GID", "65532"),
             value_env("ENCLAVA_INIT_WAIT_FOR_CONTAINERS", "web,tenant-ingress"),
         ]),
         "volumeMounts": [
@@ -978,6 +980,16 @@ mod tests {
             .manifest_yaml
             .contains("name: STORAGE_OWNERSHIP_MODE"));
         assert!(invocation.manifest_yaml.contains("value: password"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("name: ENCLAVA_INIT_UNLOCK_SOCKET"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("value: /run/enclava/unlock.sock"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("name: ENCLAVA_INIT_UNLOCK_SOCKET_GID"));
+        assert!(invocation.manifest_yaml.contains("value: '65532'"));
         assert!(invocation
             .manifest_yaml
             .contains("image: ghcr.io/enclava-ai/demo@sha256:aaaa"));
