@@ -797,10 +797,10 @@ fn tenant_ingress_container(descriptor: &DeploymentDescriptor) -> Value {
             field_env("POD_NAME", "metadata.name"),
             field_env("POD_NAMESPACE", "metadata.namespace"),
             value_env("CADDY_SEED_PATH", "/run/enclava/seeds/caddy/seed"),
-            value_env("VOLUME_MOUNT_POINT", "/state/tls-state"),
-            value_env("XDG_DATA_HOME", "/state/tls-state/caddy"),
-            value_env("XDG_CONFIG_HOME", "/state/tls-state/caddy/config"),
-            value_env("HOME", "/state/tls-state"),
+            value_env("VOLUME_MOUNT_POINT", "/tls-state"),
+            value_env("XDG_DATA_HOME", "/tls-state/caddy"),
+            value_env("XDG_CONFIG_HOME", "/tls-state/caddy/config"),
+            value_env("HOME", "/tls-state"),
             value_env("ENCLAVA_CONTAINER_NAME", "tenant-ingress"),
             value_env("ENCLAVA_STARTED_DIR", "/run/enclava/containers"),
             value_env("ENCLAVA_INIT_READY_FILE", "/run/enclava/init-ready"),
@@ -808,7 +808,6 @@ fn tenant_ingress_container(descriptor: &DeploymentDescriptor) -> Value {
         "volumeMounts": [
             mount("tenant-ingress-caddyfile", "/etc/caddy", true),
             mount("unlock-socket", "/run/enclava", false),
-            mount("state-mount", "/state", false),
         ],
         "securityContext": security_context(10002, 10002, true, false, false, caps(&["ALL"], &["NET_BIND_SERVICE"])),
         "resources": resources("100m", "128Mi", "500m", "256Mi"),
@@ -1001,7 +1000,7 @@ mod tests {
         assert!(invocation.manifest_yaml.contains("name: XDG_CONFIG_HOME"));
         assert!(invocation
             .manifest_yaml
-            .contains("value: /state/tls-state/caddy/config"));
+            .contains("value: /tls-state/caddy/config"));
         assert!(invocation.manifest_yaml.contains("- name: A"));
         assert!(invocation.manifest_yaml.contains("value: '1'"));
     }
