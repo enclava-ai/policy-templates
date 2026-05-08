@@ -796,7 +796,7 @@ fn tenant_ingress_container(descriptor: &DeploymentDescriptor) -> Value {
         "env": with_kubernetes_service_env(vec![
             field_env("POD_NAME", "metadata.name"),
             field_env("POD_NAMESPACE", "metadata.namespace"),
-            value_env("CADDY_SEED_PATH", "/state/caddy/seed"),
+            value_env("CADDY_SEED_PATH", "/run/enclava/seeds/caddy/seed"),
             value_env("VOLUME_MOUNT_POINT", "/state/tls-state"),
             value_env("XDG_DATA_HOME", "/state/tls-state/caddy"),
             value_env("XDG_CONFIG_HOME", "/state/tls-state/caddy/config"),
