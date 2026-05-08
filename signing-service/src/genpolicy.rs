@@ -637,18 +637,6 @@ fn mount(name: &str, mount_path: &str, read_only: bool) -> Value {
     })
 }
 
-fn mount_with_subpath(name: &str, mount_path: &str, sub_path: &str) -> Value {
-    json!({
-        "name": name,
-        "mountPath": mount_path,
-        "subPath": sub_path,
-    })
-}
-
-fn storage_subdir(path: &str) -> String {
-    path.trim_start_matches('/').replace('/', "-")
-}
-
 fn caps(drop: &[&str], add: &[&str]) -> Value {
     let mut capabilities = Map::new();
     capabilities.insert(
@@ -702,29 +690,11 @@ fn resources(
 
 fn app_container(descriptor: &DeploymentDescriptor) -> Value {
     let oci = &descriptor.oci_runtime_spec;
-    let mut volume_mounts = vec![
+    let volume_mounts = vec![
         mount("startup", "/startup", true),
         mount("unlock-socket", "/run/enclava", false),
         mount("state-mount", "/state", false),
     ];
-    for storage_path in oci
-        .mounts
-        .iter()
-        .filter(|mount| {
-            mount.source == "state-mount"
-                || mount.source.starts_with("state-mount:")
-                || mount.mount_type == "kubernetes-volume-subpath"
-        })
-        .map(|mount| mount.destination.as_str())
-        .filter(|path| *path != "/state")
-    {
-        volume_mounts.push(mount_with_subpath(
-            "state-mount",
-            storage_path,
-            &storage_subdir(storage_path),
-        ));
-    }
-
     let env = with_kubernetes_service_env(
         oci.env
             .iter()
@@ -1010,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_subpath_mounts_render_into_app_container_manifest() {
+    fn descriptor_subpath_mounts_are_bound_by_enclava_init_not_kubernetes_subpath() {
         let mut descriptor = fixed_descriptor();
         descriptor.oci_runtime_spec.mounts = vec![
             Mount {
@@ -1029,8 +999,9 @@ mod tests {
 
         let manifest = render_pod_manifest(&descriptor).unwrap();
 
-        assert!(manifest.contains("mountPath: /data"));
-        assert!(manifest.contains("subPath: data"));
+        assert!(manifest.contains("mountPath: /state"));
+        assert!(!manifest.contains("mountPath: /data"));
+        assert!(!manifest.contains("subPath:"));
     }
 
     #[test]
