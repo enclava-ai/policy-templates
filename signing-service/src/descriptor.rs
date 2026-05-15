@@ -110,6 +110,8 @@ pub struct DeploymentDescriptor {
     pub signer_identity: SignerIdentity,
     pub oci_runtime_spec: OciRuntimeSpec,
     pub sidecars: Sidecars,
+    #[serde(default)]
+    pub api_signing_pubkey: String,
 
     #[serde(with = "hex_bytes32")]
     pub expected_firmware_measurement: [u8; 32],
@@ -332,6 +334,10 @@ fn descriptor_records<'a>(
         ("oci_runtime_spec", sub.oci_hash.as_slice()),
         ("sidecars", sub.sidecar_hash.as_slice()),
         (
+            "api_signing_pubkey",
+            descriptor.api_signing_pubkey.as_bytes(),
+        ),
+        (
             "expected_firmware_measurement",
             descriptor.expected_firmware_measurement.as_slice(),
         ),
@@ -497,6 +503,7 @@ pub mod tests {
                 attestation_proxy_digest: "sha256:1111".to_string(),
                 caddy_digest: "sha256:2222".to_string(),
             },
+            api_signing_pubkey: "test-api-signing-pubkey".to_string(),
             expected_firmware_measurement: [3; 32],
             expected_runtime_class: "kata-qemu-snp".to_string(),
             kbs_resource_path: "default/cap-abcd1234-demo-tls-owner".to_string(),
@@ -514,7 +521,7 @@ pub mod tests {
     fn descriptor_core_hash_matches_cap_vector() {
         assert_eq!(
             hex::encode(descriptor_core_hash(&fixed_descriptor())),
-            "6e1faab9c698a929ceb2a7986a9706f9115f464d0b9238d9b13ddb157b2fc665"
+            "9c9e02f64492caed0c44990b09bfb967ba85f40ec9ec31276a3e260a8a064364"
         );
     }
 

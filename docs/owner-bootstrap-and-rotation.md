@@ -1,5 +1,10 @@
 # Owner Bootstrap and Rotation
 
+This is a legacy transitional flow. Production signing-service deployments do
+not register `/bootstrap-org`, `/rotate-owner`, or `/sign`; those routes require
+both `ENABLE_PLATFORM_POLICY_SIGNING=1` and
+`SIGNING_SERVICE_ENABLE_LEGACY_OWNER_API=1`.
+
 ## Bootstrap
 
 1. CLI creates the org owner Ed25519 keypair.

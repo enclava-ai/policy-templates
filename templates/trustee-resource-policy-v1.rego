@@ -29,6 +29,7 @@ allow if {
   requested_resource_path_allowed
   data.request.body.operation == "rekey"
   data.request.body.receipt.signature_valid
+  data.request.body.receipt.pubkey_hash_matches
   data.request.body.receipt.payload.purpose == "enclava-rekey-v1"
   data.request.body.receipt.payload.resource_path == requested_resource_path
   data.request.body.value_hash_matches
@@ -41,6 +42,7 @@ allow if {
   requested_resource_path_allowed
   data.request.body.operation == "teardown"
   data.request.body.receipt.signature_valid
+  data.request.body.receipt.pubkey_hash_matches
   data.request.body.receipt.payload.purpose == "enclava-teardown-v1"
   data.request.body.receipt.payload.resource_path == requested_resource_path
 }

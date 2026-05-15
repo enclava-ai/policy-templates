@@ -30,7 +30,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 struct AppState {
     key_material: Option<Arc<SigningKeyMaterial>>,
-    owner_store: Arc<OwnerStore>,
+    owner_store: Option<Arc<OwnerStore>>,
     genpolicy: GenpolicyConfig,
     template_sha256: String,
     auth: Arc<ServiceAuth>,
@@ -108,24 +108,37 @@ async fn main() -> Result<()> {
     } else {
         None
     };
-    let owner_db_path = env::var("OWNER_DB_PATH").unwrap_or_else(|_| "owner-state.sqlite3".into());
-    let owner_store = OwnerStore::open(PathBuf::from(owner_db_path))?;
+    let legacy_owner_api_enabled = legacy_owner_api_enabled(platform_policy_signing_enabled);
+    let owner_store = if legacy_owner_api_enabled {
+        let owner_db_path =
+            env::var("OWNER_DB_PATH").unwrap_or_else(|_| "owner-state.sqlite3".into());
+        Some(Arc::new(OwnerStore::open(PathBuf::from(owner_db_path))?))
+    } else {
+        None
+    };
     let genpolicy = GenpolicyConfig::from_env();
     genpolicy.require_pinned_version()?;
     let auth = ServiceAuth::from_env()?;
     let state = AppState {
         key_material,
-        owner_store: Arc::new(owner_store),
+        owner_store,
         genpolicy,
         template_sha256: hex::encode(template_sha256()),
         auth: Arc::new(auth),
     };
 
-    let protected_routes = Router::new()
-        .route("/agent-policy", post(generate_agent_policy))
-        .route("/sign", post(sign_policy))
-        .route("/bootstrap-org", post(bootstrap_org))
-        .route("/rotate-owner", post(rotate_owner))
+    let mut protected_routes = Router::new().route("/agent-policy", post(generate_agent_policy));
+    if legacy_owner_api_enabled {
+        protected_routes = protected_routes
+            .route("/sign", post(sign_policy))
+            .route("/bootstrap-org", post(bootstrap_org))
+            .route("/rotate-owner", post(rotate_owner));
+    } else {
+        tracing::info!(
+            "legacy platform signing and owner bootstrap routes are disabled; serving /agent-policy only"
+        );
+    }
+    let protected_routes = protected_routes
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_service_auth,
@@ -204,6 +217,8 @@ async fn sign_policy(
     }
     let owner = state
         .owner_store
+        .as_ref()
+        .ok_or_else(|| anyhow!("legacy owner API is disabled"))?
         .require_owner(blobs.descriptor_envelope.descriptor.org_id)?;
     let inputs = verify_signing_inputs(blobs, &owner.owner_pubkey)?;
     let generated_agent_policy = state.genpolicy.run(&inputs.descriptor)?;
@@ -229,6 +244,10 @@ fn env_flag(name: &str) -> bool {
     env::var(name)
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
+}
+
+fn legacy_owner_api_enabled(platform_policy_signing_enabled: bool) -> bool {
+    platform_policy_signing_enabled && env_flag("SIGNING_SERVICE_ENABLE_LEGACY_OWNER_API")
 }
 
 impl ServiceAuth {
@@ -319,6 +338,8 @@ async fn bootstrap_org(
     };
     let outcome = state
         .owner_store
+        .as_ref()
+        .ok_or_else(|| anyhow!("legacy owner API is disabled"))?
         .bootstrap_owner(req.org_id, owner_pubkey, Utc::now())?;
     let state_label = match outcome {
         BootstrapOutcome::Created => "bootstrapped",
@@ -338,7 +359,11 @@ async fn rotate_owner(
     if req.reason.trim().is_empty() {
         return Err(AppError(anyhow!("rotation reason is required")));
     }
-    let current = state.owner_store.require_owner(req.org_id)?;
+    let owner_store = state
+        .owner_store
+        .as_ref()
+        .ok_or_else(|| anyhow!("legacy owner API is disabled"))?;
+    let current = owner_store.require_owner(req.org_id)?;
     let signing_pubkey = decode_pubkey_b64("signing_pubkey_b64", &req.signing_pubkey_b64)?;
     if signing_pubkey.to_bytes() != current.owner_pubkey.to_bytes() {
         return Err(AppError(anyhow!(
@@ -361,12 +386,8 @@ async fn rotate_owner(
         .verify(&directive, &signature)
         .map_err(|err| anyhow!("owner rotation signature verification failed: {err}"))?;
 
-    let rotated = state.owner_store.rotate_owner(
-        req.org_id,
-        current.owner_pubkey,
-        replacement,
-        Utc::now(),
-    )?;
+    let rotated =
+        owner_store.rotate_owner(req.org_id, current.owner_pubkey, replacement, Utc::now())?;
     Ok(Json(RotateOwnerResponse {
         org_id: req.org_id,
         version: rotated.version,
@@ -498,5 +519,13 @@ mod tests {
         };
         let req = Request::builder().body(Body::empty()).unwrap();
         assert!(auth.authorizes(&req));
+    }
+
+    #[test]
+    fn legacy_owner_api_is_disabled_by_default_even_with_platform_key_material() {
+        std::env::remove_var("SIGNING_SERVICE_ENABLE_LEGACY_OWNER_API");
+
+        assert!(!legacy_owner_api_enabled(true));
+        assert!(!legacy_owner_api_enabled(false));
     }
 }

@@ -33,11 +33,10 @@ transports the signed envelope to Trustee.
 Required production env:
 
 - `SIGNING_SERVICE_BEARER_TOKEN` or `SIGNING_SERVICE_BEARER_TOKENS` - bearer
-  token(s) accepted by `/agent-policy`, `/sign`, `/bootstrap-org`, and
-  `/rotate-owner`.
-- `OWNER_DB_PATH` - durable SQLite owner DB path.
-- `ENABLE_PLATFORM_POLICY_SIGNING=false` - production mode. `/sign` rejects
-  requests, and customers submit their own signed policy artifact.
+  token(s) accepted by `/agent-policy`.
+- `ENABLE_PLATFORM_POLICY_SIGNING=false` - production mode. Legacy `/sign`,
+  `/bootstrap-org`, and `/rotate-owner` routes are not registered, and
+  customers submit their own signed policy artifact.
 - `TRUSTEE_KBS_URL` and `TRUSTEE_KBS_CA_CERT_PEM` - HTTPS Trustee KBS URL and
   CA certificate used when generating the pod manifest that genpolicy evaluates.
 
@@ -47,6 +46,7 @@ Optional local/dev env:
 - `SIGNING_SERVICE_ALLOW_UNAUTHENTICATED=1` - local-only escape hatch when
   running the service without bearer auth.
 - `ENABLE_PLATFORM_POLICY_SIGNING=1` plus
+  `SIGNING_SERVICE_ENABLE_LEGACY_OWNER_API=1`, `OWNER_DB_PATH`,
   `ALLOW_RAW_POLICY_SIGNING_KEY_B64=1`, `POLICY_SIGNING_KEY_B64`, and
   `POLICY_SIGNING_KEY_ID` - compatibility-only platform signing mode. Do not
   use this in production.
@@ -97,8 +97,9 @@ placeholder with an immutable digest, source the bearer token from the platform
 secret manager, set the genpolicy version pin, and wire any genpolicy binary or
 settings mounts required by the release.
 
-`POST /sign` is disabled in production. If explicitly enabled for a transitional
-environment, it no longer accepts caller-provided policy slots. It decodes the
+Legacy `POST /sign`, `POST /bootstrap-org`, and `POST /rotate-owner` are not
+registered in production. If explicitly enabled for a transitional environment,
+`POST /sign` no longer accepts caller-provided policy slots. It decodes the
 descriptor and keyring blobs, verifies:
 
 1. org keyring owner signature against the bootstrapped owner pubkey in the

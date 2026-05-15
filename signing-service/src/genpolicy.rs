@@ -18,12 +18,12 @@ const KATA_HYPERVISOR_CC_INIT_DATA_ANNOTATION: &str =
 const KATA_RUNTIME_CC_INIT_DATA_ANNOTATION: &str = "io.katacontainers.config.runtime.cc_init_data";
 const KATA_RUNTIME_HANDLER: &str = "kata-qemu-snp";
 const DEFAULT_KBS_URL: &str = "http://kbs-service.trustee-operator-system.svc.cluster.local:8080";
-const ATTESTATION_PROXY_IMAGE_REPO: &str = "ghcr.io/enclava-ai/attestation-proxy";
+const DEFAULT_ATTESTATION_PROXY_IMAGE_REPO: &str = "ghcr.io/enclava-ai/attestation-proxy";
 const CADDY_INGRESS_IMAGE_REPO: &str = "ghcr.io/enclava-ai/caddy-ingress";
 const ENCLAVA_WAIT_EXEC_PATH: &str = "/usr/local/bin/enclava-wait-exec";
-const CADDY_ACME_TLS_PORT: u16 = 443;
+const CADDY_ACME_TLS_PORT: u16 = 10443;
 const CADDY_INTERNAL_TLS_PORT: u16 = 10443;
-const CADDY_INTERNAL_RUNTIME_PATH: &str = "/tmp/caddy";
+const CADDY_INTERNAL_RUNTIME_PATH: &str = "/run/enclava/caddy-runtime";
 
 fn tenant_caddy_internal_tls_enabled() -> bool {
     std::env::var("TENANT_CADDY_TLS_MODE")
@@ -37,6 +37,14 @@ fn trustee_kbs_url() -> String {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_KBS_URL.to_string())
+}
+
+fn attestation_proxy_image_repo() -> String {
+    std::env::var("ATTESTATION_PROXY_IMAGE_REPO")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_ATTESTATION_PROXY_IMAGE_REPO.to_string())
 }
 
 fn trustee_kbs_resource_url() -> String {
@@ -778,6 +786,15 @@ fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Result<Valu
         value_env("ATTESTATION_TLS_BIND", "0.0.0.0"),
         value_env("ATTESTATION_TLS_PORT", "8443"),
         value_env("TEE_DOMAIN", descriptor.tee_domain.clone()),
+    ];
+    if !descriptor.api_signing_pubkey.trim().is_empty() {
+        env_vars.push(value_env(
+            "CAP_API_SIGNING_PUBKEY",
+            descriptor.api_signing_pubkey.clone(),
+        ));
+    }
+    env_vars.extend([
+        value_env("CAP_CONFIG_DIR", "/state/.enclava/config"),
         value_env(
             "STORAGE_OWNERSHIP_MODE",
             storage_ownership_mode(&descriptor.unlock_mode)?,
@@ -797,14 +814,14 @@ fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Result<Valu
         value_env("KBS_FETCH_MAX_SLEEP_SECONDS", "10"),
         value_env("KBS_FETCH_REQUEST_TIMEOUT_SECONDS", "10"),
         value_env("ENCLAVA_INIT_UNLOCK_SOCKET", "/run/enclava/unlock.sock"),
-    ];
+    ]);
     if let Some(cert) = trustee_kbs_ca_cert_pem() {
         env_vars.push(value_env("KBS_RESOURCE_CA_CERT_PEM", cert));
     }
 
     Ok(json!({
         "name": "attestation-proxy",
-        "image": image_ref(ATTESTATION_PROXY_IMAGE_REPO, &descriptor.sidecars.attestation_proxy_digest),
+        "image": image_ref(&attestation_proxy_image_repo(), &descriptor.sidecars.attestation_proxy_digest),
         "command": ["/attestation-proxy"],
         "ports": [
             {"containerPort": 8081, "name": "attest-http"},
@@ -813,9 +830,11 @@ fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Result<Valu
         "env": with_kubernetes_service_env(env_vars),
         "volumeMounts": [
             mount("ownership-signal", "/run/ownership-signal", false),
+            mount_with_propagation("state-mount", "/data", false, "HostToContainer"),
+            mount_with_propagation("state-mount", "/state", false, "HostToContainer"),
             mount("unlock-socket", "/run/enclava", false),
         ],
-        "securityContext": security_context(65532, 65532, true, false, false, caps(&["ALL"], &[])),
+        "securityContext": security_context(10001, 10001, true, false, false, caps(&["ALL"], &[])),
         "resources": resources("100m", "128Mi", "500m", "256Mi"),
     }))
 }
@@ -833,27 +852,18 @@ fn tenant_ingress_container_for_mode(
     } else {
         CADDY_ACME_TLS_PORT
     };
-    let (volume_mount_point, xdg_data_home, xdg_config_home, home) = if internal_tls {
-        (
-            CADDY_INTERNAL_RUNTIME_PATH.to_string(),
-            CADDY_INTERNAL_RUNTIME_PATH.to_string(),
-            format!("{CADDY_INTERNAL_RUNTIME_PATH}/config"),
-            CADDY_INTERNAL_RUNTIME_PATH.to_string(),
-        )
-    } else {
-        (
-            "/state/tls-state/tenant-ingress".to_string(),
-            "/state/tls-state/tenant-ingress/caddy".to_string(),
-            "/state/tls-state/tenant-ingress/caddy/config".to_string(),
-            "/state/tls-state/tenant-ingress".to_string(),
-        )
-    };
+    let (volume_mount_point, xdg_data_home, xdg_config_home, home) = (
+        CADDY_INTERNAL_RUNTIME_PATH.to_string(),
+        CADDY_INTERNAL_RUNTIME_PATH.to_string(),
+        format!("{CADDY_INTERNAL_RUNTIME_PATH}/config"),
+        CADDY_INTERNAL_RUNTIME_PATH.to_string(),
+    );
 
     json!({
         "name": "tenant-ingress",
         "image": image_ref(CADDY_INGRESS_IMAGE_REPO, &descriptor.sidecars.caddy_digest),
         "command": [ENCLAVA_WAIT_EXEC_PATH],
-        "args": ["caddy", "run", "--config", "/etc/caddy/Caddyfile"],
+        "args": ["/usr/bin/caddy", "run", "--config", "/etc/caddy/Caddyfile"],
         "ports": [
             {"containerPort": tls_port, "name": "https"},
         ],
@@ -872,9 +882,8 @@ fn tenant_ingress_container_for_mode(
         "volumeMounts": [
             mount("tenant-ingress-caddyfile", "/etc/caddy", true),
             mount("unlock-socket", "/run/enclava", false),
-            mount_with_propagation("tls-state-mount", "/state/tls-state", false, "HostToContainer"),
         ],
-        "securityContext": security_context(10002, 10002, false, false, false, caps(&["ALL"], &["NET_BIND_SERVICE"])),
+        "securityContext": security_context(10002, 10002, false, false, false, caps(&["ALL"], &[])),
         "resources": resources("100m", "128Mi", "500m", "256Mi"),
     })
 }
@@ -898,7 +907,7 @@ fn enclava_init_container() -> Result<Value> {
             value_env("ENCLAVA_INIT_STAY_ALIVE", "true"),
             value_env("ENCLAVA_INIT_READY_FILE", "/run/enclava/init-ready"),
             value_env("ENCLAVA_INIT_STARTED_DIR", "/run/enclava/containers"),
-            value_env("ENCLAVA_INIT_UNLOCK_SOCKET_GID", "65532"),
+            value_env("ENCLAVA_INIT_UNLOCK_SOCKET_GID", "10001"),
             value_env("ENCLAVA_INIT_WAIT_FOR_CONTAINERS", "web,tenant-ingress"),
         ]),
         "volumeMounts": [
@@ -925,7 +934,7 @@ fn cap_volumes(descriptor: &DeploymentDescriptor) -> Vec<Value> {
             format!("{}-tenant-ingress", descriptor.app_name),
         ),
         config_map_volume("startup", format!("{}-startup", descriptor.app_name)),
-        json!({"name": "unlock-socket", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}),
+        json!({"name": "unlock-socket", "emptyDir": {"medium": "Memory", "sizeLimit": "16Mi"}}),
         json!({"name": "state-mount", "emptyDir": {}}),
         json!({"name": "tls-state-mount", "emptyDir": {}}),
         config_map_volume(
@@ -1066,8 +1075,14 @@ mod tests {
             .contains("value: /run/enclava/unlock.sock"));
         assert!(invocation
             .manifest_yaml
+            .contains("name: CAP_API_SIGNING_PUBKEY"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("value: test-api-signing-pubkey"));
+        assert!(invocation
+            .manifest_yaml
             .contains("name: ENCLAVA_INIT_UNLOCK_SOCKET_GID"));
-        assert!(invocation.manifest_yaml.contains("value: '65532'"));
+        assert!(invocation.manifest_yaml.contains("value: '10001'"));
         assert!(invocation
             .manifest_yaml
             .contains("image: ghcr.io/enclava-ai/demo@sha256:aaaa"));
@@ -1080,22 +1095,45 @@ mod tests {
         assert!(invocation.manifest_yaml.contains("name: XDG_CONFIG_HOME"));
         assert!(invocation
             .manifest_yaml
-            .contains("value: /state/tls-state/tenant-ingress/caddy/config"));
-        assert!(invocation.manifest_yaml.contains("containerPort: 443"));
+            .contains("value: /run/enclava/caddy-runtime/config"));
+        assert!(invocation.manifest_yaml.contains("containerPort: 10443"));
         assert!(invocation.manifest_yaml.contains("- name: A"));
         assert!(invocation.manifest_yaml.contains("value: '1'"));
+        assert!(invocation.manifest_yaml.contains("mountPath: /data"));
+        assert!(invocation.manifest_yaml.contains("name: state-mount"));
     }
 
     #[test]
-    fn tenant_ingress_internal_tls_manifest_uses_high_port_and_tmp_runtime() {
+    fn tenant_ingress_internal_tls_manifest_uses_high_port_and_shared_runtime() {
         let container = tenant_ingress_container_for_mode(&fixed_descriptor(), true);
         let yaml = serde_yaml::to_string(&container).unwrap();
         assert!(yaml.contains("containerPort: 10443"));
         assert!(yaml.contains("name: XDG_DATA_HOME"));
-        assert!(yaml.contains("value: /tmp/caddy"));
+        assert!(yaml.contains("value: /run/enclava/caddy-runtime"));
         assert!(yaml.contains("name: XDG_CONFIG_HOME"));
-        assert!(yaml.contains("value: /tmp/caddy/config"));
+        assert!(yaml.contains("value: /run/enclava/caddy-runtime/config"));
         assert!(yaml.contains("name: HOME"));
+    }
+
+    #[test]
+    fn attestation_proxy_runs_as_state_owner_for_config_storage() {
+        let container = attestation_proxy_container(&fixed_descriptor()).unwrap();
+        assert_eq!(
+            container.pointer("/securityContext/runAsUser"),
+            Some(&json!(10001))
+        );
+        assert_eq!(
+            container.pointer("/securityContext/runAsGroup"),
+            Some(&json!(10001))
+        );
+        assert_eq!(
+            container.pointer("/securityContext/readOnlyRootFilesystem"),
+            Some(&json!(true))
+        );
+        let manifest = serde_yaml::to_string(&container).unwrap();
+        assert!(manifest.contains("name: CAP_CONFIG_DIR"));
+        assert!(manifest.contains("value: /state/.enclava/config"));
+        assert!(manifest.contains("mountPath: /state"));
     }
 
     #[test]
@@ -1119,7 +1157,7 @@ mod tests {
         let manifest = render_pod_manifest(&descriptor).unwrap();
 
         assert!(manifest.contains("mountPath: /state"));
-        assert!(!manifest.contains("mountPath: /data"));
+        assert_eq!(manifest.matches("mountPath: /data").count(), 1);
         assert!(!manifest.contains("subPath:"));
     }
 
