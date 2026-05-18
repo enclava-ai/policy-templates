@@ -570,6 +570,7 @@ fn render_pod_manifest(descriptor: &DeploymentDescriptor) -> Result<String> {
                 "supplementalGroups": [6],
             },
             "containers": [
+                enclava_tools_container()?,
                 app_container(descriptor),
                 attestation_proxy_container(descriptor)?,
                 tenant_ingress_container(descriptor),
@@ -747,6 +748,7 @@ fn resources(
 fn app_container(descriptor: &DeploymentDescriptor) -> Value {
     let oci = &descriptor.oci_runtime_spec;
     let volume_mounts = vec![
+        mount("enclava-tools", "/enclava-tools", true),
         mount("startup", "/startup", true),
         mount("unlock-socket", "/run/enclava", false),
         mount_with_propagation("state-mount", "/state", false, "HostToContainer"),
@@ -813,7 +815,10 @@ fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Result<Valu
         value_env("KBS_FETCH_RETRY_SLEEP_SECONDS", "2"),
         value_env("KBS_FETCH_MAX_SLEEP_SECONDS", "10"),
         value_env("KBS_FETCH_REQUEST_TIMEOUT_SECONDS", "10"),
-        value_env("ENCLAVA_INIT_UNLOCK_SOCKET", "/run/enclava/unlock.sock"),
+        value_env(
+            "ENCLAVA_INIT_UNLOCK_SOCKET",
+            "/run/enclava-unlock/unlock.sock",
+        ),
     ]);
     if let Some(cert) = trustee_kbs_ca_cert_pem() {
         env_vars.push(value_env("KBS_RESOURCE_CA_CERT_PEM", cert));
@@ -832,7 +837,7 @@ fn attestation_proxy_container(descriptor: &DeploymentDescriptor) -> Result<Valu
             mount("ownership-signal", "/run/ownership-signal", false),
             mount_with_propagation("state-mount", "/data", false, "HostToContainer"),
             mount_with_propagation("state-mount", "/state", false, "HostToContainer"),
-            mount("unlock-socket", "/run/enclava", false),
+            mount("unlock-channel", "/run/enclava-unlock", false),
         ],
         "securityContext": security_context(10001, 10001, true, false, false, caps(&["ALL"], &[])),
         "resources": resources("100m", "128Mi", "500m", "256Mi"),
@@ -870,7 +875,7 @@ fn tenant_ingress_container_for_mode(
         "env": with_kubernetes_service_env(vec![
             field_env("POD_NAME", "metadata.name"),
             field_env("POD_NAMESPACE", "metadata.namespace"),
-            value_env("CADDY_SEED_PATH", "/run/enclava/seeds/caddy/seed"),
+            value_env("CADDY_SEED_PATH", "/state/caddy/seed"),
             value_env("VOLUME_MOUNT_POINT", volume_mount_point),
             value_env("XDG_DATA_HOME", xdg_data_home),
             value_env("XDG_CONFIG_HOME", xdg_config_home),
@@ -881,11 +886,29 @@ fn tenant_ingress_container_for_mode(
         ]),
         "volumeMounts": [
             mount("tenant-ingress-caddyfile", "/etc/caddy", true),
+            mount("enclava-tools", "/enclava-tools", true),
             mount("unlock-socket", "/run/enclava", false),
         ],
         "securityContext": security_context(10002, 10002, false, false, false, caps(&["ALL"], &[])),
         "resources": resources("100m", "128Mi", "500m", "256Mi"),
     })
+}
+
+fn enclava_tools_container() -> Result<Value> {
+    Ok(json!({
+        "name": "enclava-tools",
+        "image": enclava_init_image()?,
+        "command": [
+            "/bin/sh",
+            "-c",
+            "cp /usr/local/bin/enclava-wait-exec /work/enclava-wait-exec && chmod 0555 /work/enclava-wait-exec",
+        ],
+        "volumeMounts": [
+            mount("enclava-tools", "/work", false),
+        ],
+        "securityContext": security_context(0, 0, true, false, false, caps(&["ALL"], &[])),
+        "resources": resources("10m", "16Mi", "50m", "64Mi"),
+    }))
 }
 
 fn enclava_init_container() -> Result<Value> {
@@ -914,6 +937,7 @@ fn enclava_init_container() -> Result<Value> {
             mount_with_propagation("state-mount", "/state", false, "Bidirectional"),
             mount_with_propagation("tls-state-mount", "/state/tls-state", false, "Bidirectional"),
             mount("unlock-socket", "/run/enclava", false),
+            mount("unlock-channel", "/run/enclava-unlock", false),
             mount("enclava-init-config", "/etc/enclava-init", true),
         ],
         "volumeDevices": [
@@ -921,7 +945,7 @@ fn enclava_init_container() -> Result<Value> {
             {"name": "tls-state", "devicePath": "/dev/csi1"},
         ],
         "securityContext": security_context(0, 0, true, true, true, caps(&["ALL"], &["$(privileged_caps)"])),
-        "resources": resources("50m", "64Mi", "250m", "128Mi"),
+        "resources": resources("50m", "64Mi", "250m", "512Mi"),
     }))
 }
 
@@ -934,7 +958,9 @@ fn cap_volumes(descriptor: &DeploymentDescriptor) -> Vec<Value> {
             format!("{}-tenant-ingress", descriptor.app_name),
         ),
         config_map_volume("startup", format!("{}-startup", descriptor.app_name)),
+        json!({"name": "enclava-tools", "emptyDir": {}}),
         json!({"name": "unlock-socket", "emptyDir": {"medium": "Memory", "sizeLimit": "16Mi"}}),
+        json!({"name": "unlock-channel", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}),
         json!({"name": "state-mount", "emptyDir": {}}),
         json!({"name": "tls-state-mount", "emptyDir": {}}),
         config_map_volume(
@@ -1072,7 +1098,23 @@ mod tests {
             .contains("name: ENCLAVA_INIT_UNLOCK_SOCKET"));
         assert!(invocation
             .manifest_yaml
-            .contains("value: /run/enclava/unlock.sock"));
+            .contains("value: /run/enclava-unlock/unlock.sock"));
+        assert!(invocation.manifest_yaml.contains("name: enclava-tools"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("cp /usr/local/bin/enclava-wait-exec /work/enclava-wait-exec"));
+        assert!(invocation.manifest_yaml.contains("mountPath: /work"));
+        assert!(invocation.manifest_yaml.contains("name: unlock-channel"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("mountPath: /run/enclava-unlock"));
+        assert!(invocation.manifest_yaml.contains("name: CADDY_SEED_PATH"));
+        assert!(invocation
+            .manifest_yaml
+            .contains("value: /state/caddy/seed"));
+        assert!(!invocation
+            .manifest_yaml
+            .contains("value: /run/enclava/seeds/caddy/seed"));
         assert!(invocation
             .manifest_yaml
             .contains("name: CAP_API_SIGNING_PUBKEY"));
