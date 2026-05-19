@@ -569,8 +569,10 @@ fn render_pod_manifest(descriptor: &DeploymentDescriptor) -> Result<String> {
                 "fsGroup": 10001,
                 "supplementalGroups": [6],
             },
-            "containers": [
+            "initContainers": [
                 enclava_tools_container()?,
+            ],
+            "containers": [
                 app_container(descriptor),
                 attestation_proxy_container(descriptor)?,
                 tenant_ingress_container(descriptor),
@@ -1046,7 +1048,7 @@ mod tests {
             .manifest_yaml
             .contains("runtimeClassName: kata-qemu-snp"));
         assert!(invocation.manifest_yaml.contains("name: demo-0"));
-        assert!(!invocation.manifest_yaml.contains("initContainers:"));
+        assert!(invocation.manifest_yaml.contains("initContainers:"));
         assert!(invocation
             .manifest_yaml
             .contains("io.containerd.cri.runtime-handler: kata-qemu-snp"));
@@ -1159,6 +1161,32 @@ mod tests {
         assert!(yaml.contains("name: XDG_CONFIG_HOME"));
         assert!(yaml.contains("value: /run/enclava/caddy-runtime/config"));
         assert!(yaml.contains("name: HOME"));
+    }
+
+    #[test]
+    fn enclava_tools_manifest_is_an_init_container_like_live_cap_manifest() {
+        let manifest: Value =
+            serde_yaml::from_str(&render_pod_manifest(&fixed_descriptor()).unwrap()).unwrap();
+        let init_containers = manifest
+            .pointer("/spec/initContainers")
+            .and_then(Value::as_array)
+            .expect("CAP genpolicy manifest must include initContainers");
+        assert!(init_containers.iter().any(|container| {
+            container.pointer("/name") == Some(&json!("enclava-tools"))
+                && container.pointer("/securityContext/readOnlyRootFilesystem")
+                    == Some(&json!(true))
+        }));
+
+        let app_containers = manifest
+            .pointer("/spec/containers")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert!(
+            app_containers
+                .iter()
+                .all(|container| container.pointer("/name") != Some(&json!("enclava-tools"))),
+            "enclava-tools is an init container in the live CAP manifest"
+        );
     }
 
     #[test]
